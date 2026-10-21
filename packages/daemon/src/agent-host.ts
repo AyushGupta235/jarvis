@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { dirname } from 'node:path';
-import type { RichConversation, RichEnvelope, RichEvent, RichInfo } from '@jarvis/protocol';
+import type { RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion } from '@jarvis/protocol';
 import type { RichHostConfig, RichHostMeta } from '@jarvis/protocol/node';
 
 const cfg = JSON.parse(process.env.JARVIS_HOST_CONFIG ?? 'null') as RichHostConfig | null;
@@ -54,6 +54,12 @@ function textOf(content: unknown): string {
 /** Turn one API message (live or from the transcript) into events. */
 function fromMessage(role: 'user' | 'assistant', message: any, parentToolUseId: string | null, replay: boolean): void {
   const content = message?.content;
+  if (!replay && Array.isArray(content)) {
+    for (const b of content) {
+      if (b?.type === 'tool_use') runningTools++;
+      else if (b?.type === 'tool_result') runningTools = Math.max(0, runningTools - 1);
+    }
+  }
   if (role === 'user') {
     if (typeof content === 'string') {
       if (replay) push({ kind: 'user', text: content }, true);
@@ -92,14 +98,27 @@ function onSdkMessage(m: SDKMessage): void {
         }
         pushStatus();
       } else if (m.subtype === 'compact_boundary') push({ kind: 'compact' });
+      else if (m.subtype === 'task_started') {
+        foreground.add(m.task_id);
+        onTaskStarted?.();
+      } else if (m.subtype === 'task_updated' && (m as { patch?: { is_backgrounded?: boolean } }).patch?.is_backgrounded) foreground.delete(m.task_id);
+      else if (m.subtype === 'task_notification') foreground.delete(m.task_id);
       return;
-    case 'assistant':
+    case 'assistant': {
+      const stamped = [m.user_message_uuid, ...(m.user_message_uuids ?? [])].filter((u): u is string => !!u);
+      if (stamped.length) markRead(stamped);
+      else if (!m.parent_tool_use_id) foldQueued();
       fromMessage('assistant', m.message, m.parent_tool_use_id, false);
       return;
+    }
     case 'user':
+      if (!m.parent_tool_use_id && Array.isArray((m.message as { content?: unknown }).content)) foldQueued();
       fromMessage('user', m.message, m.parent_tool_use_id, false);
       return;
     case 'result':
+      turnActive = unread.size > 0; // anything still unread starts the next turn
+      for (const [, v] of unread) v.queued = false;
+      void reportContext();
       push({
         kind: 'turn_end', ok: m.subtype === 'success', durationMs: m.duration_ms ?? null, costUsd: m.total_cost_usd ?? null,
         error: m.subtype === 'success' ? null : ('errors' in m && m.errors?.length ? m.errors.join('; ') : m.subtype),
@@ -118,8 +137,8 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
   private wake: (() => void) | null = null;
   private done = false;
 
-  push(text: string): void {
-    this.queue.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null });
+  push(text: string, uuid: string): void {
+    this.queue.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, uuid: uuid as `${string}-${string}-${string}-${string}-${string}` });
     this.wake?.();
   }
 
@@ -143,6 +162,47 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
 
 const inbox = new Inbox();
 
+/**
+ * Messages you sent that Claude hasn't read yet. A message sent mid-turn is queued; Claude Code folds it in at
+ * the next tool result (or starts a new turn with it), and the SDK stamps the uuid on the reply that answers it.
+ */
+let turnActive = false;
+
+/**
+ * Commands Claude Code has registered as tasks that Ctrl+B could move to the background. A command registers a
+ * few seconds after it starts, and backgroundTasks() before that returns true but does nothing; so a Ctrl+B
+ * pressed early waits for the registration.
+ */
+const foreground = new Set<string>();
+let onTaskStarted: (() => void) | null = null;
+let runningTools = 0;
+
+async function backgroundNow(): Promise<boolean> {
+  if (!foreground.size && runningTools > 0) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 10_000);
+      onTaskStarted = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+    onTaskStarted = null;
+  }
+  return foreground.size ? q!.backgroundTasks() : false;
+}
+const unread = new Map<string, { sentAt: number; queued: boolean }>();
+
+function markRead(uuids: string[]): void {
+  const hit = uuids.filter((u) => unread.delete(u));
+  if (hit.length) push({ kind: 'user_read', uuids: hit });
+}
+
+/** Something from the agent arrived: anything queued before it has been folded into this turn. */
+function foldQueued(): void {
+  const now = Date.now();
+  markRead([...unread.entries()].filter(([, m]) => m.queued && m.sentAt < now - 50).map(([u]) => u));
+}
+
 /** What the CLI reported at startup, plus what changes as the session runs (model, mode, session id after /clear). */
 const info: RichInfo = {
   commands: [], terminalCommands: [], models: [], outputStyles: [], account: null, version: null, model: null, permissionMode: null,
@@ -160,6 +220,15 @@ function pushStatus(): void {
   push({ kind: 'status', model: info.model, permissionMode: info.permissionMode, agentSessionId: currentSessionId, cwd: cfg!.cwd, authSource: info.account?.authSource ?? null });
 }
 const pending = new Map<string, { input: Record<string, unknown>; resolve: (r: PermissionResult) => void }>();
+
+/** The answer to a question card: allow the tool with the answers filled in, which is what Claude reads back. */
+function answerQuestion(requestId: string, answers: Record<string, string | string[]>): void {
+  const p = pending.get(requestId);
+  if (!p) return;
+  pending.delete(requestId);
+  p.resolve({ behavior: 'allow', updatedInput: { ...p.input, answers } });
+  push({ kind: 'permission_resolved', requestId, behavior: 'allow', answers });
+}
 
 function resolvePermission(requestId: string, behavior: 'allow' | 'deny', message?: string): void {
   const p = pending.get(requestId);
@@ -214,15 +283,22 @@ function handle(c: Socket, line: string): void {
     case 'send': {
       const text = String(msg.text ?? '');
       if (!text.trim()) return;
-      push({ kind: 'user', text });
-      inbox.push(text);
+      const uuid = randomUUID();
+      const queued = turnActive;
+      turnActive = true;
+      unread.set(uuid, { sentAt: Date.now(), queued });
+      push({ kind: 'user', text, uuid, ...(queued ? { queued: true } : {}) });
+      inbox.push(text, uuid);
       return;
     }
     case 'interrupt':
       void q?.interrupt().catch((e) => log('interrupt failed', e));
       return;
+    case 'answer':
+      answerQuestion(String(msg.requestId), msg.answers ?? {});
+      return;
     case 'respond':
-      resolvePermission(String(msg.requestId), msg.behavior === 'allow' ? 'allow' : 'deny', msg.message);
+      resolvePermission(String(msg.requestId), msg.behavior === 'allow' ? 'allow' : 'deny', msg.message || (pending.get(String(msg.requestId))?.input.questions ? 'The user skipped this question.' : undefined));
       return;
     case 'close':
       void shutdown('closed from Jarvis');
@@ -230,12 +306,23 @@ function handle(c: Socket, line: string): void {
     case 'info':
     case 'conversations':
     case 'set_mode':
+    case 'background':
       void request(msg.op, msg)
         .then((result) => send(c, { op: 'reply', reqId: msg.reqId, result }))
         .catch((e) => send(c, { op: 'reply', reqId: msg.reqId, error: (e as Error).message }));
       return;
     default:
       return;
+  }
+}
+
+/** Context window use after each turn (the SDK has no status line); 'summary' costs no extra tokens. */
+async function reportContext(): Promise<void> {
+  try {
+    const u = await q!.getContextUsage({ detail: 'summary' });
+    if (u.maxTokens > 0) push({ kind: 'context', usedPct: u.percentage, usedTokens: u.totalTokens, windowTokens: u.maxTokens });
+  } catch (e) {
+    log('context usage failed', (e as Error).message);
   }
 }
 
@@ -251,6 +338,9 @@ async function request(op: string, msg: any): Promise<unknown> {
         branch: x.gitBranch ?? null, current: x.sessionId === currentSessionId,
       }));
     }
+    case 'background':
+      if (!q) throw new Error('the session has not started yet');
+      return { backgrounded: await backgroundNow() };
     case 'set_mode': {
       if (!q) throw new Error('the session has not started yet');
       await q.setPermissionMode(msg.mode);
@@ -315,7 +405,9 @@ async function main(): Promise<void> {
       canUseTool: (tool, input, opts) => new Promise<PermissionResult>((resolve) => {
         const requestId = randomUUID();
         pending.set(requestId, { input, resolve });
-        push({ kind: 'permission_request', requestId, tool, input, reason: opts.decisionReason ?? null });
+        if (tool === 'AskUserQuestion') {
+          push({ kind: 'question_request', requestId, questions: ((input as { questions?: RichQuestion[] }).questions ?? []) });
+        } else push({ kind: 'permission_request', requestId, tool, input, reason: opts.decisionReason ?? null });
         opts.signal.addEventListener('abort', () => {
           if (pending.has(requestId)) resolvePermission(requestId, 'deny', 'Cancelled');
         });

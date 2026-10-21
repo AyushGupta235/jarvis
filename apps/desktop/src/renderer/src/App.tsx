@@ -49,6 +49,10 @@ export function App() {
               <span className="tb-sep">·</span>
               <span className="tb-repo">{wsName}</span>
               {active.mode === 'rich' && <span className="chip rich" title="Driven through the Agent SDK and drawn by Jarvis">rich</span>}
+              {active.mode === 'rich' && active.status === 'running' && (
+                <button className="chip no-drag" title="Reopen this conversation in Claude Code's own screen"
+                  onClick={() => void rpc('sessions.switchMode', { id: active.id, mode: 'terminal' }).catch(() => {})}>terminal ↗</button>
+              )}
               {active.mode === 'terminal' && !active.external && active.agent === 'claude' && active.status === 'running' && (
                 <button className="chip rich no-drag" title="Reopen this conversation in the rich view"
                   onClick={() => void rpc('sessions.switchMode', { id: active.id, mode: 'rich' }).catch(() => {})}>rich view ↗</button>

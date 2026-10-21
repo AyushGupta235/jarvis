@@ -759,3 +759,44 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .rv-work-failed { flex: none; color: var(--love); }
 .rv-work-latest { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; opacity: 0.8; }
 .rv-work-body { margin-top: 4px; padding-top: 4px; border-top: 1px solid rgb(var(--text-rgb) / 0.06); }
+
+/* Queued messages and context in the rich composer */
+.rv-queue { margin: 0 0 8px; padding: 6px 10px; border-radius: 9px; border: 1px dashed rgb(var(--text-rgb) / 0.18); background: rgb(var(--text-rgb) / 0.025); }
+.rv-queue-title { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+.rv-queue-item { font-size: 13px; color: var(--text-soft); white-space: pre-wrap; padding: 2px 0; }
+.rv-queue-item + .rv-queue-item { border-top: 1px solid rgb(var(--text-rgb) / 0.06); }
+.rv-user-tag { margin-left: 10px; font-size: 10.5px; color: var(--muted); }
+.rv-ctx { font-size: 11px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+.rv-ctx.warm { color: var(--gold); }
+.rv-ctx.hot { color: var(--love); }
+
+/* Rich view: controls live where they act (density on the conversation, Background/Stop on running work) */
+.rv-topbar { flex: none; display: flex; justify-content: flex-end; padding: 6px 14px 0; }
+.rv-topbar .rv-density { opacity: 0.75; }
+.rv-topbar .rv-density:hover { opacity: 1; }
+.rv-work { position: relative; }
+.rv-work-actions { display: inline-flex; gap: 4px; margin-left: auto; flex: none; }
+.rv-work:not(.grouped) > .rv-work-actions { position: absolute; top: 4px; right: 6px; z-index: 1; }
+.rv-work-actions .chip-btn { font-size: 10.5px; padding: 1px 7px; }
+
+/* Claude's questions */
+.rv-ask { margin: 10px 0 14px; padding: 12px 14px; border-radius: 11px; border: 1px solid rgb(var(--iris-rgb) / 0.35); background: rgb(var(--iris-rgb) / 0.06); }
+.rv-ask-title { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--iris); font-weight: 650; margin-bottom: 8px; }
+.rv-ask-q + .rv-ask-q { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgb(var(--text-rgb) / 0.08); }
+.rv-ask-head { display: flex; gap: 8px; align-items: baseline; font-size: 14px; color: var(--text-strong); margin-bottom: 8px; line-height: 1.45; }
+.rv-ask-tag { flex: none; font-size: 10.5px; padding: 1px 7px; border-radius: 5px; background: rgb(var(--iris-rgb) / 0.2); color: var(--iris); font-weight: 600; }
+.rv-ask-options { display: flex; flex-direction: column; gap: 6px; }
+.rv-ask-opt { display: grid; grid-template-columns: 16px 1fr; column-gap: 10px; text-align: left; padding: 8px 11px; border-radius: 9px; border: 1px solid rgb(var(--text-rgb) / 0.12); background: rgb(var(--text-rgb) / 0.03); color: var(--text); cursor: pointer; font: inherit; }
+.rv-ask-opt:hover:not(:disabled) { border-color: rgb(var(--iris-rgb) / 0.5); }
+.rv-ask-opt.on { border-color: var(--iris); background: rgb(var(--iris-rgb) / 0.14); }
+.rv-ask-mark { grid-row: span 2; width: 15px; height: 15px; margin-top: 2px; border-radius: 50%; border: 1.5px solid var(--muted); display: grid; place-items: center; font-size: 10px; color: var(--base); }
+.rv-ask-mark.box { border-radius: 4px; }
+.rv-ask-opt.on .rv-ask-mark { background: var(--iris); border-color: var(--iris); }
+.rv-ask-label { font-size: 13px; font-weight: 600; }
+.rv-ask-desc { grid-column: 2; font-size: 12px; color: var(--subtle); line-height: 1.45; margin-top: 2px; }
+.rv-ask-other { background: transparent; border: 1px dashed rgb(var(--text-rgb) / 0.2); border-radius: 9px; color: var(--text); padding: 7px 11px; font: inherit; font-size: 13px; outline: none; }
+.rv-ask-other:focus { border-color: var(--iris); border-style: solid; }
+.rv-ask-actions { display: flex; gap: 8px; margin-top: 12px; }
+.rv-asked { margin: 6px 0 10px; font-size: 12.5px; color: var(--subtle); }
+.rv-asked-q { color: var(--subtle); }
+.rv-asked-a { color: var(--text); font-weight: 600; }

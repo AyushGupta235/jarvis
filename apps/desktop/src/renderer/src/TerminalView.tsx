@@ -124,6 +124,11 @@ export function TerminalView({ session, visible }: Props) {
     term.onResize(({ cols, rows }) => {
       if (ptyId !== null) window.jarvis.ptyResize(ptyId, cols, rows);
     });
+    const claudePane = () => {
+      const s = sessionRef.current;
+      const cmd = (s.paneCommand ?? '').replace(/^-/, '');
+      return s.agent === 'claude' && !!cmd && !['zsh', 'bash', 'fish', 'sh', 'login', 'tmux'].includes(cmd);
+    };
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
       // ⌘ shortcuts belong to the app menu.
@@ -131,6 +136,13 @@ export function TerminalView({ session, visible }: Props) {
       // Shift+Enter: newline in Claude Code (sent as Meta+Enter, which survives tmux).
       if (e.key === 'Enter' && e.shiftKey && !e.altKey && !e.ctrlKey) {
         write('\x1b\r');
+        return false;
+      }
+      // Ctrl+B in Claude Code backgrounds the running task, but tmux's prefix is also Ctrl+B. In a Claude pane,
+      // send it twice: tmux's prefix + C-b passes one Ctrl+B through (send-prefix). Your second prefix (C-a)
+      // and the menu keep tmux commands working there.
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b' && claudePane()) {
+        write('\x02\x02');
         return false;
       }
       // Option+←/→: word jumps, same sequences as the WezTerm config.

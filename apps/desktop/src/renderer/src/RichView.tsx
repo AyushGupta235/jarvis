@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { RichConversation, RichEnvelope, RichEvent, RichInfo, SessionInfo } from '@jarvis/protocol';
+import type { RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion, SessionInfo } from '@jarvis/protocol';
 import { ago, isLocalUrl, openInViewer, openPreview, rpc, sessionRoot, setState, useStore } from './store';
 import { Prose } from './ProseView';
 import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
-import { shortenCommand, shortenPaths } from './toolText';
+import { resolveLocalHref, shortenCommand, shortenPaths } from './toolText';
 import { DENSITIES } from '../../shared/themes';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, commandCatalog, matchCommands, parseCommand, type Command,
@@ -126,6 +126,62 @@ function ThinkingGroup({ texts, sub }: { texts: string[]; sub: string }) {
   );
 }
 
+/**
+ * Claude's multiple-choice question: each question with its options as cards (radio, or checkboxes when more
+ * than one can be picked), an "Other" box for your own answer, and Send or Skip. Your answer goes back to
+ * Claude, which carries on with it.
+ */
+function QuestionCard({ questions, disabled, onAnswer, onSkip }: {
+  questions: RichQuestion[]; disabled: boolean;
+  onAnswer: (answers: Record<string, string | string[]>) => void; onSkip: () => void;
+}) {
+  const [picked, setPicked] = useState<Record<number, string[]>>({});
+  const [other, setOther] = useState<Record<number, string>>({});
+  const answerFor = (i: number): string | string[] | null => {
+    const q = questions[i]!;
+    const chosen = picked[i] ?? [];
+    const own = (other[i] ?? '').trim();
+    if (q.multiSelect) return chosen.length || own ? [...chosen, ...(own ? [own] : [])] : null;
+    return own || chosen[0] || null;
+  };
+  const complete = questions.every((_, i) => answerFor(i) != null);
+  const toggle = (i: number, label: string, multi: boolean) => setPicked((p) => {
+    const cur = p[i] ?? [];
+    const next = multi ? (cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]) : [label];
+    return { ...p, [i]: next };
+  });
+  return (
+    <div className="rv-ask">
+      <div className="rv-ask-title">Claude is asking</div>
+      {questions.map((q, i) => (
+        <div key={i} className="rv-ask-q">
+          <div className="rv-ask-head">{q.header && <span className="rv-ask-tag">{q.header}</span>}<span>{q.question}</span></div>
+          <div className="rv-ask-options">
+            {q.options.map((o) => {
+              const on = (picked[i] ?? []).includes(o.label) && !(other[i] ?? '').trim();
+              return (
+                <button key={o.label} className={`rv-ask-opt${on ? ' on' : ''}`} disabled={disabled}
+                  onClick={() => { setOther((x) => ({ ...x, [i]: q.multiSelect ? (x[i] ?? '') : '' })); toggle(i, o.label, q.multiSelect); }}>
+                  <span className={`rv-ask-mark${q.multiSelect ? ' box' : ''}`}>{on ? '✓' : ''}</span>
+                  <span className="rv-ask-label">{o.label}</span>
+                  {o.description && <span className="rv-ask-desc">{o.description}</span>}
+                </button>
+              );
+            })}
+            <input className="rv-ask-other" placeholder="Something else…" value={other[i] ?? ''} disabled={disabled}
+              onChange={(e) => setOther((x) => ({ ...x, [i]: e.target.value }))} />
+          </div>
+        </div>
+      ))}
+      <div className="rv-ask-actions">
+        <button className="btn primary" disabled={disabled || !complete}
+          onClick={() => onAnswer(Object.fromEntries(questions.map((q, i) => [q.question, answerFor(i)!])))}>Send answer</button>
+        <button className="btn" disabled={disabled} onClick={onSkip}>Skip</button>
+      </div>
+    </div>
+  );
+}
+
 /** One run of the agent's work: its rows, plus what the collapsed summary needs. */
 interface WorkRun {
   key: string;
@@ -139,11 +195,32 @@ interface WorkRun {
  * smaller and dimmer than Claude's messages. A run with several steps folds to one row ("6 steps · Read ×3 ·
  * Bash ×2") that shows the latest step while it works and opens to the individual calls.
  */
-function WorkBlock({ run, startOpen }: { run: WorkRun; startOpen: boolean }) {
+/** Background and Stop sit on the work that's running, where you're already looking. */
+function WorkActions({ run, actions }: { run: WorkRun; actions: WorkControls }) {
+  const live = [...run.tools].reverse().find((t) => t.state === 'running');
+  if (!live) return null;
+  return (
+    <div className="rv-work-actions" onClick={(e) => e.stopPropagation()}>
+      {live.name === 'Bash' && (
+        <button className="chip-btn" title="Move the running command to the background so Claude carries on" onClick={actions.background}>
+          Background <kbd>⌃B</kbd>
+        </button>
+      )}
+      <button className="chip-btn" title="Stop this turn" onClick={actions.stop}>Stop <kbd>esc</kbd></button>
+    </div>
+  );
+}
+
+interface WorkControls {
+  background: () => void;
+  stop: () => void;
+}
+
+function WorkBlock({ run, startOpen, actions }: { run: WorkRun; startOpen: boolean; actions: WorkControls }) {
   const [open, setOpen] = useState(startOpen);
   useEffect(() => setOpen(startOpen), [startOpen]);
   const steps = run.tools.length + (run.thoughts ? 1 : 0);
-  if (run.rows.length <= 1 || steps <= 1) return <div className="rv-work">{run.rows}</div>;
+  if (run.rows.length <= 1 || steps <= 1) return <div className="rv-work"><WorkActions run={run} actions={actions} />{run.rows}</div>;
   const counts = new Map<string, number>();
   for (const t of run.tools) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
   const names = [...counts.entries()].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(' · ');
@@ -158,6 +235,7 @@ function WorkBlock({ run, startOpen }: { run: WorkRun; startOpen: boolean }) {
         <span className="rv-work-names">{names}{run.thoughts ? ` · ${run.thoughts} thought${run.thoughts === 1 ? '' : 's'}` : ''}</span>
         {failed > 0 && <span className="rv-work-failed">{failed} failed</span>}
         {!open && latest && <span className="rv-work-latest">{latest.name} {latest.arg}</span>}
+        <WorkActions run={run} actions={actions} />
       </div>
       {open && <div className="rv-work-body">{run.rows}</div>}
     </div>
@@ -276,15 +354,19 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     return () => window.removeEventListener('jarvis:quote', onQuote);
   }, [session.id]);
 
-  const { ends, resolved, lastReply, status } = useMemo(() => {
+  const { ends, resolved, answersById, lastReply, status } = useMemo(() => {
     const ends = new Map<string, Ev<'tool_end'>>();
     const resolved = new Map<string, 'allow' | 'deny'>();
+    const answersById = new Map<string, Record<string, string | string[]>>();
     let lastReply = '';
     let status: Ev<'status'> | null = null;
     let turnText: string[] = [];
     for (const { event: e } of events) {
       if (e.kind === 'tool_end') ends.set(e.toolUseId, e);
-      else if (e.kind === 'permission_resolved') resolved.set(e.requestId, e.behavior);
+      else if (e.kind === 'permission_resolved') {
+        resolved.set(e.requestId, e.behavior);
+        if (e.answers) answersById.set(e.requestId, e.answers);
+      }
       else if (e.kind === 'status') status = e;
       else if (e.kind === 'user') turnText = [];
       else if (e.kind === 'text' && !e.parentToolUseId) {
@@ -292,7 +374,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         lastReply = turnText.join('\n\n');
       }
     }
-    return { ends, resolved, lastReply, status };
+    return { ends, resolved, answersById, lastReply, status };
   }, [events]);
 
   const density = useStore((s) => s.richDensity);
@@ -423,6 +505,20 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   const respond = (requestId: string, behavior: 'allow' | 'deny') =>
     void rpc('rich.respond', { id: session.id, requestId, behavior }).catch(() => {});
   const working = session.agentState?.phase === 'working';
+  // Messages sent mid-turn: their text by uuid, and the ones Claude hasn't read yet (shown above the composer).
+  const { queuedText, waiting } = useMemo(() => {
+    const queuedText = new Map<string, string>();
+    const read = new Set<string>();
+    for (const { event: e } of events) {
+      if (e.kind === 'user' && e.queued && e.uuid) queuedText.set(e.uuid, e.text);
+      else if (e.kind === 'user_read') for (const u of e.uuids) read.add(u);
+    }
+    return { queuedText, waiting: [...queuedText.entries()].filter(([u]) => !read.has(u)) };
+  }, [events]);
+  const workControls: WorkControls = {
+    background: () => void background(),
+    stop: () => void rpc('rich.interrupt', { id: session.id }).catch(() => {}),
+  };
 
   /** Clicks inside replies: copy and expand code blocks, open file paths and links. */
   const onProseClick = (e: React.MouseEvent) => {
@@ -448,10 +544,21 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       return;
     }
     const href = t.closest<HTMLElement>('[data-href]')?.dataset.href;
-    if (href && /^https?:\/\//.test(href)) {
+    if (!href) return;
+    if (/^https?:\/\//.test(href)) {
       if (isLocalUrl(href)) openPreview(href);
       else window.jarvis.openExternal(href);
+      return;
     }
+    // A link to a file in the repo (docs, plans): open it in the viewer.
+    const local = resolveLocalHref(href, session.cwd, window.jarvis.homeDir);
+    if (local) openInViewer({ path: local.path, root: sessionRoot(session), mode: 'file', line: local.line });
+  };
+
+  /** Ctrl+B, as in Claude Code: move running tool calls to the background so Claude carries on. */
+  const background = async () => {
+    const r = await rpc<{ backgrounded: boolean }>('rich.background', { id: session.id }).catch(() => null);
+    setNote(r?.backgrounded ? 'Moved the running task to the background' : 'Nothing running to background');
   };
 
   let lastStatus = '';
@@ -460,7 +567,13 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     const sub = 'parentToolUseId' in e && e.parentToolUseId ? ' rv-sub' : '';
     switch (e.kind) {
       case 'user':
+        // Sent while Claude was working: it waits in the queue tray, and shows here once Claude reads it.
+        if (e.queued && e.uuid) return null;
         return <div key={key} className={`rv-user${replay ? ' replay' : ''}`}><span className="rv-caret">›</span>{e.text}</div>;
+      case 'user_read':
+        return e.uuids.map((u) => queuedText.get(u)).filter((t): t is string => t != null).map((t, i) => (
+          <div key={`${key}-${i}`} className="rv-user"><span className="rv-caret">›</span>{t}<span className="rv-user-tag">read mid-turn</span></div>
+        ));
       case 'text':
         return <Prose key={key} text={e.text} className={`rv-text${sub}`} />;
       case 'thinking': {
@@ -477,6 +590,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         return <ThinkingGroup key={key} texts={thinking.groups.get(seq) ?? [e.text]} sub={sub} />;
       }
       case 'tool_start': {
+        if (e.tool === 'AskUserQuestion') return null; // the question card (or the "Asked:" line) stands in for it
         const end = ends.get(e.toolUseId);
         const state = !end ? 'running' : end.isError ? 'error' : 'ok';
         return (
@@ -489,6 +603,25 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
             <pre className="rv-io">{JSON.stringify(e.input, null, 2)}</pre>
             {end && <pre className={`rv-io out${end.isError ? ' err' : ''}`}>{end.output || '(no output)'}</pre>}
           </details>
+        );
+      }
+      case 'question_request': {
+        const done = resolved.get(e.requestId);
+        if (done || replay) {
+          const ans = answersById.get(e.requestId);
+          return (
+            <div key={key} className="rv-asked">
+              {e.questions.map((q, qi) => (
+                <div key={qi}><span className="rv-asked-q">Asked: {q.question}</span>
+                  <span className="rv-asked-a">{ans ? ` → ${[ans[q.question]].flat().join(', ')}` : done === 'deny' ? ' → skipped' : ''}</span></div>
+              ))}
+            </div>
+          );
+        }
+        return (
+          <QuestionCard key={key} questions={e.questions} disabled={!connected}
+            onAnswer={(answers) => void rpc('rich.answer', { id: session.id, requestId: e.requestId, answers }).catch(() => {})}
+            onSkip={() => respond(e.requestId, 'deny')} />
         );
       }
       case 'permission_request': {
@@ -542,7 +675,21 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   });
 
   return (
-    <div className="rich-wrap" style={{ display: visible ? 'flex' : 'none' }} onMouseDown={() => picker && setPicker(null)}>
+    <div className="rich-wrap" style={{ display: visible ? 'flex' : 'none' }} onMouseDown={() => picker && setPicker(null)}
+      onKeyDown={(e) => {
+        if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b' && working) {
+          e.preventDefault();
+          void background();
+        }
+      }}>
+      <div className="rv-topbar">
+        <div className="seg small rv-density" title="How much thinking to show (⌥⌘T)">
+          {DENSITIES.map((d) => (
+            <button key={d.id} className={`seg-btn ${density === d.id ? 'on' : ''}`} title={`${d.detail} (⌥⌘T cycles)`}
+              onClick={() => setDensity(d.id)}>{d.label}</button>
+          ))}
+        </div>
+      </div>
       <div className="rv-scroll" ref={box} onClick={onProseClick} onScroll={(e) => {
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
@@ -550,12 +697,18 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         <div className="rv-column" key={look}>
           {!events.length && <div className="rv-empty">{connected ? 'Send a message to start. Type / for commands.' : 'Connecting to the session…'}</div>}
           {workRuns(rows, events, ends, session.cwd).map((x) => (x && typeof x === 'object' && 'tools' in x
-            ? <WorkBlock key={`work-${x.key}`} run={x} startOpen={density === 'detailed'} />
+            ? <WorkBlock key={`work-${x.key}`} run={x} startOpen={density === 'detailed'} actions={workControls} />
             : x))}
         </div>
       </div>
       <div className="rv-composer">
         {picker && <Picker {...picker} onClose={() => { setPicker(null); input.current?.focus(); }} />}
+        {waiting.length > 0 && (
+          <div className="rv-queue" title="Claude Code folds these in at its next step">
+            <div className="rv-queue-title">Queued · Claude reads {waiting.length === 1 ? 'this' : 'these'} at its next step</div>
+            {waiting.map(([u, t]) => <div key={u} className="rv-queue-item">{t}</div>)}
+          </div>
+        )}
         {palette && palette.length > 0 && (
           <div className="rv-palette" onMouseDown={(e) => e.preventDefault()}>
             {palette.map((c, i) => (
@@ -606,15 +759,6 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           <span className="muted">{working ? `working${session.agentState?.tool ? `: ${session.agentState.tool}` : ''}` : connected ? 'ready' : 'disconnected'}</span>
           {note && <span className="rv-toast">{note}</span>}
           <span className="strip-spacer" />
-          <div className="seg small rv-density" title="How much thinking to show (⌥⌘T)">
-            {DENSITIES.map((d) => (
-              <button key={d.id} className={`seg-btn ${density === d.id ? 'on' : ''}`} title={`${d.detail} (⌥⌘T cycles)`}
-                onClick={() => setDensity(d.id)}>{d.label}</button>
-            ))}
-          </div>
-          <button className="chip-btn ghost" title="Reopen this conversation in Claude Code's own screen" disabled={!connected}
-            onClick={() => void openTerminal(null)}>Open in terminal</button>
-          {working && <button className="chip-btn" onClick={() => void rpc('rich.interrupt', { id: session.id }).catch(() => {})}>Interrupt <kbd>esc</kbd></button>}
           <button className="chip-btn" disabled={!connected || !draft.trim()} onClick={() => void submit()}>Send <kbd>↵</kbd></button>
         </div>
       </div>

@@ -33,3 +33,32 @@ export function shortenPaths(text: string, cwd: string, home: string): string {
   }
   return s;
 }
+
+/**
+ * A link in a reply that points at a local file (`docs/prd.md`, `./a.ts:12`, `~/x.md#L3`, `file:///abs`), as an
+ * absolute path and optional line. Relative paths are from the session's directory. Web links return null.
+ */
+export function resolveLocalHref(href: string, cwd: string, home: string): { path: string; line?: number } | null {
+  let h = href.trim();
+  if (!h || /^(https?|mailto|data|javascript):/i.test(h)) return null;
+  if (h.startsWith('file://')) h = h.slice('file://'.length);
+  let line: number | undefined;
+  const anchor = /#L(\d+)(?:-L?\d+)?$/.exec(h);
+  if (anchor) {
+    line = Number(anchor[1]);
+    h = h.slice(0, anchor.index);
+  } else {
+    const colon = /:(\d+)(?::\d+)?$/.exec(h);
+    if (colon) {
+      line = Number(colon[1]);
+      h = h.slice(0, colon.index);
+    }
+  }
+  h = h.replace(/#.*$/, '');
+  try {
+    h = decodeURI(h);
+  } catch { /* keep as is */ }
+  if (!h) return null;
+  const path = h.startsWith('/') ? h : h.startsWith('~') ? home + h.slice(1) : `${cwd.replace(/\/$/, '')}/${h.replace(/^\.\//, '')}`;
+  return { path: path.replace(/\/\.\//g, '/'), ...(line ? { line } : {}) };
+}

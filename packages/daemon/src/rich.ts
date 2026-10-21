@@ -243,6 +243,10 @@ export class RichSessions extends EventEmitter {
     this.op(id, { op: 'respond', requestId, behavior, message });
   }
 
+  answer(id: string, requestId: string, answers: Record<string, string | string[]>): void {
+    this.op(id, { op: 'answer', requestId, answers });
+  }
+
   /** Stop the host (the conversation stays in the transcript and can be revived). */
   async stop(id: string): Promise<void> {
     const pid = this.conns.get(id)?.pid ?? this.meta(id)?.pid ?? null;

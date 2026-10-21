@@ -26,3 +26,18 @@ describe('shortenCommand (rich view tool rows)', () => {
     expect(shortenPaths('git -C /Users/me/code/api-server status', cwd, home)).toBe('git -C . status');
   });
 });
+
+import { resolveLocalHref } from '../src/renderer/src/toolText';
+
+describe('resolveLocalHref (file links in replies)', () => {
+  it('resolves relative, home, absolute and file:// links, with line anchors', () => {
+    expect(resolveLocalHref('.claude/worktrees/x/docs/prd.md', cwd, home)).toEqual({ path: `${cwd}/.claude/worktrees/x/docs/prd.md` });
+    expect(resolveLocalHref('./src/a.ts:12', cwd, home)).toEqual({ path: `${cwd}/src/a.ts`, line: 12 });
+    expect(resolveLocalHref('~/notes/plan.md#L3-L9', cwd, home)).toEqual({ path: '/Users/me/notes/plan.md', line: 3 });
+    expect(resolveLocalHref('file:///tmp/a%20b.md', cwd, home)).toEqual({ path: '/tmp/a b.md' });
+  });
+  it('leaves web links to the browser', () => {
+    expect(resolveLocalHref('https://example.com/a.md', cwd, home)).toBeNull();
+    expect(resolveLocalHref('mailto:x@y.z', cwd, home)).toBeNull();
+  });
+});

@@ -149,7 +149,11 @@ export class JarvisService extends EventEmitter {
         const r = o.db.getSession(id);
         if (r && r.agent_session_id !== ev.agentSessionId) o.db.updateSession(id, { agent_session_id: ev.agentSessionId });
       }
-      if (ev.kind === 'permission_request') o.observers.setPhase(id, 'needs_input', `Permission: ${ev.tool}`);
+      if (ev.kind === 'context') {
+        o.observers.patch(id, { context: { usedPct: ev.usedPct, usedTokens: ev.usedTokens, windowTokens: ev.windowTokens } });
+      }
+      if (ev.kind === 'question_request') o.observers.setPhase(id, 'needs_input', `Question: ${ev.questions[0]?.header || ev.questions[0]?.question || 'Claude asks'}`);
+      else if (ev.kind === 'permission_request') o.observers.setPhase(id, 'needs_input', `Permission: ${ev.tool}`);
       else if (ev.kind === 'permission_resolved' && o.observers.state(id)?.phase === 'needs_input') o.observers.setPhase(id, 'working');
       else if (ev.kind === 'turn_end' && o.observers.state(id)?.phase !== 'done') o.observers.setPhase(id, 'done', ev.ok ? null : ev.error);
     });
@@ -362,6 +366,14 @@ export class JarvisService extends EventEmitter {
   thinking(id: string): Promise<import('@jarvis/protocol').ThinkingList> {
     const r = this.row(id);
     return readThinking(r.agent_session_id ? findTranscript(r.agent_session_id) : null);
+  }
+
+  richAnswer(id: string, requestId: string, answers: Record<string, string | string[]>): void {
+    this.o.rich.answer(id, requestId, answers);
+  }
+
+  richBackground(id: string): Promise<{ backgrounded: boolean }> {
+    return this.o.rich.request<{ backgrounded: boolean }>(id, 'background');
   }
 
   richInfo(id: string): Promise<RichInfo> {

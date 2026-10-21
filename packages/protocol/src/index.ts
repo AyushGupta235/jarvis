@@ -318,13 +318,18 @@ export type RichPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | '
  * R0 covers text, tools and permissions; streaming deltas, questions and plans come in R1-R2.
  */
 export type RichEvent =
-  | { kind: 'user'; text: string }
+  /** queued: sent while Claude was mid-turn; it shows apart until a `user_read` for its uuid. */
+  | { kind: 'user'; text: string; uuid?: string; queued?: boolean }
+  | { kind: 'user_read'; uuids: string[] }
+  | { kind: 'context'; usedPct: number; usedTokens: number; windowTokens: number }
   | { kind: 'text'; text: string; parentToolUseId: string | null }
   | { kind: 'thinking'; text: string; parentToolUseId: string | null }
   | { kind: 'tool_start'; toolUseId: string; tool: string; input: unknown; parentToolUseId: string | null }
   | { kind: 'tool_end'; toolUseId: string; output: string; isError: boolean }
   | { kind: 'permission_request'; requestId: string; tool: string; input: unknown; reason: string | null }
-  | { kind: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny' }
+  /** Claude's multiple-choice question (the AskUserQuestion tool); answered with rich.answer, or skipped with rich.respond deny. */
+  | { kind: 'question_request'; requestId: string; questions: RichQuestion[] }
+  | { kind: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny'; answers?: Record<string, string | string[]> }
   | { kind: 'status'; model: string | null; permissionMode: string | null; agentSessionId: string | null; cwd: string | null; authSource: string | null }
   | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null }
   | { kind: 'compact' }
@@ -407,6 +412,13 @@ export interface RichConversation {
   current: boolean;
 }
 
+export interface RichQuestion {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: { label: string; description?: string }[];
+}
+
 export interface RichEnvelope {
   /** Increases by one per event within a host's lifetime. */
   seq: number;
@@ -449,6 +461,9 @@ export interface RpcMethods {
   'rich.send': [{ id: string; text: string }, { ok: true }];
   'rich.interrupt': [{ id: string }, { ok: true }];
   'rich.respond': [{ id: string; requestId: string; behavior: 'allow' | 'deny'; message?: string }, { ok: true }];
+  /** Ctrl+B: move running tool calls (long Bash commands) to the background so the turn continues. */
+  'rich.background': [{ id: string }, { backgrounded: boolean }];
+  'rich.answer': [{ id: string; requestId: string; answers: Record<string, string | string[]> }, { ok: true }];
   'rich.info': [{ id: string }, RichInfo];
   'rich.conversations': [{ id: string }, RichConversation[]];
   /** Switch the session to another conversation (restarts its host with that conversation resumed). */

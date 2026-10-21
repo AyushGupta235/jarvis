@@ -78,6 +78,9 @@ Claude sessions can also run in a rich view: pick **Rich (SDK)** under View in �
 - **Replies render as readable markdown**: tables (numbers right-aligned), code blocks with a language label, copy button and highlighting in your theme, callouts, task lists, and file paths that open in the viewer. Hover a reply for **Copy markdown** and **Raw**, to take the exact markdown somewhere else.
 - **Every slash command works.** Type **/** for the list. Most run through Claude Code as usual (`/context`, `/compact`, `/clear`, skills, your own commands). Jarvis does the interactive ones itself: `/resume` lists the conversations in this folder, `/model`, `/effort` and `/permissions` open pickers, plus `/status`, `/copy`, `/export` (to ~/Downloads), `/memory` and `/exit`. Commands that need Claude Code's own screen (`/login`, `/theme`, `/rewind`, `/plugin`, `/doctor` and so on) reopen the same conversation in a terminal with the command typed; **rich view ↗** in the title bar brings it back.
 - **Work stays out of the way.** Tool calls and thinking sit in a dim panel between Claude's messages; several steps fold into one row ("6 steps · Read ×3 · Bash ×2") that shows the latest step while it runs and opens to each call, with its input and output a click further. Commands drop their `cd …&&` prefix and show repo paths relative.
+- **Claude's questions** (the multiple-choice tool) show as a card: the question, each option with its description, an "other" box, and Send answer or Skip. The session shows "needs you" until you answer.
+- **Queued messages.** Send a message while Claude is working and it waits in a tray above the composer; it moves into the conversation, tagged "read mid-turn", once Claude picks it up.
+- **Ctrl+B** moves the running command to the background so Claude carries on, in the rich view (also a Background button on the running work) and in a Claude terminal session (Jarvis sends the key through tmux's own Ctrl+B prefix). **ctx %** for rich sessions shows in the title bar. Links to files in a reply open in the viewer.
 - Allow and Deny for permission prompts, and a composer: ↵ sends, ⇧↵ adds a newline, esc interrupts, ⌘' quotes the selection.
 - **Thinking, three ways** (the switch under the composer, View → Thinking, or ⌥⌘T to cycle): **Focus** hides it, **Normal** folds each stretch of thinking between Claude's messages into one row you can open, and **Detailed** shows it all inline as readable paragraphs with compact tool rows.
 
@@ -182,7 +185,7 @@ pnpm dev
 | `pnpm typecheck` | Type-check all packages |
 | `pnpm test` | Unit tests (vitest) |
 | `pnpm e2e` | Acceptance test, below |
-| `pnpm e2e:rich` | Rich view: persistence (23 checks) and slash commands plus markdown (18 checks). A few Haiku calls |
+| `pnpm e2e:rich` | Rich view: persistence (23), slash commands and markdown (18), queued messages, Ctrl+B, context, questions and file links (6). A few Haiku calls |
 | `pnpm e2e:ui` | Web preview, sidebar, side panel and thinking (9 checks, one Sonnet call), then every theme and font (5 checks) |
 | `pnpm package` | Build `apps/desktop/release/mac-arm64/Jarvis.app` |
 | `pnpm install:local` | Build, install to `~/Applications`, restart jarvisd and reopen the app |
