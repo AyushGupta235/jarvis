@@ -210,6 +210,45 @@ try {
   });
   await win.locator('.think-meta').first().click().catch(() => {});
   await win.screenshot({ path: join(ART, 'layout-4-thinking.png') });
+
+  // Thinking density in the rich view: the switch under the composer, View → Thinking, and ⌥⌘T.
+  const V = '.rich-wrap:not([style*="none"])';
+  const count = (sel) => st((x) => document.querySelectorAll(x).length).catch(() => 0);
+  const q = (sel) => win.evaluate((x) => document.querySelectorAll(x).length, sel);
+  void count;
+  const menuDensity = () => app.evaluate(({ Menu }) => {
+    const view = Menu.getApplicationMenu().items.find((x) => x.label === 'View');
+    return view.submenu.items.find((x) => x.label === 'Thinking').submenu.items.find((x) => x.checked)?.label ?? null;
+  });
+  await soft('Normal folds thinking into a row you can open in the chat', async () => {
+    if (await q(`${V} .rv-think-group`) < 1) throw new Error('no folded thinking row');
+    const preview = await win.locator(`${V} .rv-think-group .rv-think-preview`).first().innerText();
+    await win.locator(`${V} .rv-think-head`).first().click();
+    if (await q(`${V} .rv-think-group.open .rv-think-para .prose`) < 1) throw new Error('opening it shows no text');
+    const m = await menuDensity();
+    if (!/^Normal/.test(m ?? '')) throw new Error(`menu shows ${m}`);
+    return `preview: ${preview.slice(0, 50)}…`;
+  });
+  await soft('Detailed (from the composer switch) shows thinking expanded inline', async () => {
+    await win.click(`${V} .rv-density .seg-btn:text-is("Detailed")`);
+    if (await q(`${V} .rv-think-open .rv-think-para .prose`) < 1) throw new Error('no expanded thinking');
+    if (await q(`${V} .rv-think-group`) !== 0) throw new Error('folded rows still shown');
+    const m = await menuDensity();
+    if (!/^Detailed/.test(m ?? '')) throw new Error(`menu shows ${m}`);
+  });
+  await win.screenshot({ path: join(ART, 'layout-5-detailed.png') });
+  await soft('Focus (from View → Thinking) hides thinking; ⌥⌘T cycles back to Normal', async () => {
+    await app.evaluate(({ Menu }) => {
+      const view = Menu.getApplicationMenu().items.find((x) => x.label === 'View');
+      view.submenu.items.find((x) => x.label === 'Thinking').submenu.items.find((x) => /^Focus/.test(x.label)).click();
+    });
+    await sleep(300);
+    if (await q(`${V} .rv-think-group, ${V} .rv-think-open`) !== 0) throw new Error('thinking still visible in Focus');
+    await menu('cycle-density');
+    await sleep(300);
+    if (await q(`${V} .rv-think-group`) < 1) throw new Error('cycle did not return to Normal');
+    return (await menuDensity()) ?? '';
+  });
 } catch (e) {
   console.error(e);
   check('run completed', false, e.message.split('\n')[0]);

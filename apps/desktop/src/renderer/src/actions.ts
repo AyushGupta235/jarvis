@@ -5,6 +5,7 @@ import { quoteSelection } from './quote';
 import { terminals } from './TerminalView';
 import { DEFAULT_FONT_SIZE } from './theme';
 import { applyAppearance, currentTheme, missingFonts, monoFamily, xtermThemeFor } from './appearance';
+import type { ThinkingDensity } from '../../shared/themes';
 
 /**
  * Switch theme and/or fonts: CSS tokens, every open terminal, code highlighting, and main's View menu and
@@ -25,7 +26,16 @@ export function setAppearance(p: { theme?: string; uiFont?: string; monoFont?: s
   restyle();
   // Bundled fonts load on first use; measure the terminal again once the new one has arrived.
   void document.fonts.load(`13px ${family.split(',')[0]}`).then(restyle).catch(() => {});
-  window.jarvis.setAppearance({ ...next, missingFonts: missingFonts() });
+  window.jarvis.setAppearance({ ...next, density: getState().richDensity, missingFonts: missingFonts() });
+}
+
+/** Rich view thinking: Focus hides it, Normal folds each stretch, Detailed expands it all. */
+export function setDensity(d: ThinkingDensity | 'next'): void {
+  const order: ThinkingDensity[] = ['focus', 'normal', 'detailed'];
+  const st = getState();
+  const next = d === 'next' ? order[(order.indexOf(st.richDensity) + 1) % order.length]! : d;
+  setState({ richDensity: next });
+  window.jarvis.setAppearance({ theme: st.themeId, uiFont: st.uiFontId, monoFont: st.monoFontId, density: next, missingFonts: missingFonts() });
 }
 
 const SHELLS = /^(zsh|bash|fish|sh|-zsh|-bash)$/;
@@ -145,6 +155,8 @@ export function handleMenu(action: MenuAction, arg?: number | string): void {
     case 'set-theme': return setAppearance({ theme: String(arg) });
     case 'set-ui-font': return setAppearance({ uiFont: String(arg) });
     case 'set-mono-font': return setAppearance({ monoFont: String(arg) });
+    case 'set-density': return setDensity(String(arg) as ThinkingDensity);
+    case 'cycle-density': return setDensity('next');
     case 'open-preview': return setState({ dialog: st.dialog?.kind === 'preview' ? null : { kind: 'preview' } });
     case 'toggle-viewer':
       if (!st.viewerTabs.length) return setState({ dialog: { kind: 'open-file' } });

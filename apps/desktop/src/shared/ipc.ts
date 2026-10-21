@@ -9,7 +9,7 @@ export type MenuAction =
   | 'clear' | 'find' | 'font-bigger' | 'font-smaller' | 'font-reset' | 'toggle-sidebar' | 'toggle-hidden'
   | 'move-up' | 'move-down' | 'copy-mode'
   | 'toggle-navigator' | 'nav-tab' | 'quick-open' | 'toggle-viewer' | 'close-viewer-tab' | 'next-attention' | 'quote-reply'
-  | 'open-preview' | 'toggle-sidebar-rail' | 'set-theme' | 'set-ui-font' | 'set-mono-font'
+  | 'open-preview' | 'toggle-sidebar-rail' | 'set-theme' | 'set-ui-font' | 'set-mono-font' | 'set-density' | 'cycle-density'
   | 'goto-session-id';
 
 export interface ContextMenuItem {

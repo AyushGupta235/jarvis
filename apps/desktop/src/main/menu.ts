@@ -1,6 +1,6 @@
 import { Menu, app, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
 import type { MenuAction } from '../shared/ipc';
-import { MONO_FONTS, THEMES, UI_FONTS, type AppearanceState } from '../shared/themes';
+import { DENSITIES, MONO_FONTS, THEMES, UI_FONTS, type AppearanceState } from '../shared/themes';
 
 export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => void, isDev: boolean, look: AppearanceState): void {
   const send = (action: MenuAction, arg?: number | string) => () => getWin()?.webContents.send('menu', action, arg);
@@ -114,6 +114,14 @@ export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => 
             { type: 'separator' },
             { label: 'Light Classics', enabled: false },
             ...THEMES.filter((t) => !t.original && t.kind === 'light').map((t) => radio(t.label, look.theme === t.id, 'set-theme', t.id)),
+          ],
+        },
+        {
+          label: 'Thinking',
+          submenu: [
+            ...DENSITIES.map((d) => radio(`${d.label}: ${d.detail.toLowerCase()}`, look.density === d.id, 'set-density', d.id)),
+            { type: 'separator' },
+            item('Next Thinking View', 'CmdOrCtrl+Alt+T', 'cycle-density'),
           ],
         },
         {

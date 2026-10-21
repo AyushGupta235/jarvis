@@ -147,7 +147,7 @@ daemon.on('attention', (a: AttentionEvent) => {
 });
 
 /** The renderer's theme and fonts (View menu), mirrored here for the menu's checkmarks and the window chrome. */
-let look: AppearanceState = { theme: DEFAULT_THEME, uiFont: DEFAULT_UI_FONT, monoFont: DEFAULT_MONO_FONT, missingFonts: [] };
+let look: AppearanceState = { density: 'normal', theme: DEFAULT_THEME, uiFont: DEFAULT_UI_FONT, monoFont: DEFAULT_MONO_FONT, missingFonts: [] };
 
 function applyLook(): void {
   // Match macOS chrome (vibrancy, dialogs, menus, scrollbars) to the theme, whatever the system appearance is.

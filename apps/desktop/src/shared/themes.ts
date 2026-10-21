@@ -184,8 +184,18 @@ export const MONO_FONTS: FontChoice[] = [
 export const DEFAULT_UI_FONT = 'system';
 export const DEFAULT_MONO_FONT = 'jetbrains-nerd';
 
+/** How much of the agent's thinking the rich view shows (View → Thinking, ⌥⌘T, or the switch under the composer). */
+export type ThinkingDensity = 'focus' | 'normal' | 'detailed';
+
+export const DENSITIES: { id: ThinkingDensity; label: string; detail: string }[] = [
+  { id: 'focus', label: 'Focus', detail: 'Hide thinking' },
+  { id: 'normal', label: 'Normal', detail: 'Fold each stretch of thinking into one row' },
+  { id: 'detailed', label: 'Detailed', detail: 'Show all thinking, expanded' },
+];
+
 /** What the renderer tells main, so the View menu shows the current choices and greys out missing fonts. */
 export interface AppearanceState {
+  density: ThinkingDensity;
   theme: string;
   uiFont: string;
   monoFont: string;

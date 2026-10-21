@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { ActivityEntry, AgentDef, AgentKind, SessionInfo, SessionMode, Snapshot, WorkspaceInfo } from '@jarvis/protocol';
+import type { ThinkingDensity } from '../../shared/themes';
 import { ACTIVE_WINDOW_MS } from '@jarvis/protocol';
 import type { DaemonStatus } from '../../shared/ipc';
 import { DEFAULT_FONT_SIZE } from './theme';
@@ -45,6 +46,8 @@ export interface State {
   themeId: string;
   uiFontId: string;
   monoFontId: string;
+  /** Rich view: how much thinking to show. */
+  richDensity: ThinkingDensity;
   /** Bumped when the appearance changes, so highlighted code re-renders. */
   appearanceVersion: number;
   error: string | null;
@@ -61,7 +64,7 @@ export interface State {
 }
 
 const PREFS_KEY = 'jarvis.prefs.v1';
-type Prefs = Pick<State, 'activeId' | 'showHidden' | 'sidebar' | 'sidebarRail' | 'sidebarWidth' | 'fontSize' | 'collapsed' | 'lastAgent' | 'lastModel' | 'lastMode' | 'themeId' | 'uiFontId' | 'monoFontId'
+type Prefs = Pick<State, 'activeId' | 'showHidden' | 'sidebar' | 'sidebarRail' | 'sidebarWidth' | 'fontSize' | 'collapsed' | 'lastAgent' | 'lastModel' | 'lastMode' | 'themeId' | 'uiFontId' | 'monoFontId' | 'richDensity'
   | 'navOpen' | 'navTab' | 'navWidth' | 'viewerOpen' | 'viewerTabs' | 'viewerActive' | 'viewerWidth'>;
 
 function loadPrefs(): Partial<Prefs> {
@@ -90,6 +93,7 @@ let state: State = {
   uiFontId: 'system',
   monoFontId: 'jetbrains-nerd',
   appearanceVersion: 0,
+  richDensity: 'normal',
   error: null,
   navOpen: true,
   navTab: 'activity',
@@ -117,7 +121,7 @@ export function setState(patch: Partial<State> | ((s: State) => Partial<State>))
       activeId: state.activeId, showHidden: state.showHidden, sidebar: state.sidebar, sidebarRail: state.sidebarRail,
       sidebarWidth: state.sidebarWidth, fontSize: state.fontSize,
       collapsed: state.collapsed, lastAgent: state.lastAgent, lastModel: state.lastModel, lastMode: state.lastMode,
-      themeId: state.themeId, uiFontId: state.uiFontId, monoFontId: state.monoFontId,
+      themeId: state.themeId, uiFontId: state.uiFontId, monoFontId: state.monoFontId, richDensity: state.richDensity,
       navOpen: state.navOpen, navTab: state.navTab, navWidth: state.navWidth, viewerOpen: state.viewerOpen,
       viewerTabs: state.viewerTabs.slice(0, 20), viewerActive: state.viewerActive, viewerWidth: state.viewerWidth,
     };

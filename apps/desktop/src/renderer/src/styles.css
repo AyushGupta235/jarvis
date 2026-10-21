@@ -196,9 +196,6 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .rv-caret { color: var(--iris); margin-right: 8px; font-family: var(--mono); }
 .rv-text { margin: 6px 0; }
 .rv-sub { margin-left: 18px; padding-left: 10px; border-left: 2px solid rgb(var(--text-rgb) / 0.08); }
-.rv-thinking { color: var(--muted); margin: 4px 0; }
-.rv-thinking summary { cursor: pointer; font-size: 12px; }
-.rv-thinking div { white-space: pre-wrap; font-style: italic; padding: 4px 0 4px 14px; }
 .rv-tool { margin: 3px 0; }
 .rv-tool summary { display: flex; gap: 8px; align-items: baseline; cursor: pointer; font-family: var(--mono); font-size: 12px; list-style: none; min-width: 0; }
 .rv-tool summary::-webkit-details-marker { display: none; }
@@ -696,15 +693,23 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .wp-failed { position: absolute; inset: 0; display: grid; place-content: center; gap: 6px; text-align: center; padding: 20px; background: var(--base); color: var(--text); font-size: 12.5px; }
 .vtab-mode.web { color: var(--foam); }
 
-/* Thinking: rich view cards and the Thinking tab */
-.rv-thinking { margin: 6px 0; border-left: 2px solid rgb(var(--iris-rgb) / 0.3); padding-left: 10px; }
-.rv-thinking > summary { display: flex; gap: 8px; align-items: baseline; cursor: pointer; list-style: none; color: var(--muted); font-size: 12px; min-width: 0; }
-.rv-thinking > summary::-webkit-details-marker { display: none; }
-.rv-think-tag { color: var(--iris); font-weight: 600; flex: none; }
-.rv-think-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
-.rv-thinking[open] .rv-think-preview { display: none; }
-.rv-think-body { margin: 6px 0 4px; }
-.rv-think-body .prose, .think-body .prose { font-size: 13px; color: var(--text-soft); }
+/* Thinking: neutral colours (never the theme accent, which can read like an error), rich view and Thinking tab */
+.rv-think-tag { color: var(--subtle); font-weight: 600; font-size: 11.5px; letter-spacing: 0.02em; flex: none; }
+.rv-think-group { margin: 6px 0; border-left: 2px solid rgb(var(--text-rgb) / 0.1); padding-left: 10px; }
+.rv-think-group.open { border-left-color: rgb(var(--text-rgb) / 0.22); }
+.rv-think-head { display: flex; gap: 8px; align-items: baseline; cursor: pointer; min-width: 0; font-size: 12px; color: var(--muted); }
+.rv-think-head:hover .rv-think-tag { color: var(--text); }
+.rv-think-caret { color: var(--muted); width: 10px; flex: none; }
+.rv-think-count { color: var(--muted); flex: none; font-size: 11px; }
+.rv-think-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rv-think-para { margin: 6px 0 8px; }
+.rv-think-para + .rv-think-para { padding-top: 8px; border-top: 1px dashed rgb(var(--text-rgb) / 0.08); }
+.rv-think-para .prose, .think-body .prose { font-size: 13.5px; line-height: 1.62; color: var(--text-soft); }
+.rv-think-open { margin: 10px 0; padding: 2px 0 2px 12px; border-left: 2px solid rgb(var(--text-rgb) / 0.16); }
+.rv-think-open .rv-think-para { margin-top: 2px; }
+.rv-tool.compact summary { font-size: 11px; opacity: 0.7; }
+.rv-tool.compact:hover summary, .rv-tool.compact[open] summary { opacity: 1; }
+.rv-density .seg-btn { padding: 1px 8px; font-size: 11px; }
 .think-list { padding: 4px 10px 20px; }
 .think-group { margin: 10px 0 14px; }
 .think-prompt { font-size: 12px; color: var(--iris); padding: 6px 8px; border-radius: 7px; background: rgb(var(--iris-rgb) / 0.08); margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

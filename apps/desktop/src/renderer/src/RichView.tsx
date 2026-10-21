@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { RichConversation, RichEnvelope, RichEvent, RichInfo, SessionInfo } from '@jarvis/protocol';
 import { ago, isLocalUrl, openInViewer, openPreview, rpc, sessionRoot, setState, useStore } from './store';
 import { Prose } from './ProseView';
+import { setDensity } from './actions';
+import { foldThinking } from './thinkingFold';
+import { DENSITIES } from '../../shared/themes';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, commandCatalog, matchCommands, parseCommand, type Command,
 } from './richCommands';
@@ -92,6 +95,31 @@ function Picker({ title, items, onPick, onClose, empty }: {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Preview text for a thought: first line, without markdown markers. */
+function thoughtLine(t: string): string {
+  return t.replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Normal density: every thought between two of Claude's messages, folded into one row. Closed, it shows the
+ * newest thought (so you can follow along while it works); open, the whole stretch reads as paragraphs.
+ */
+function ThinkingGroup({ texts, sub }: { texts: string[]; sub: string }) {
+  const [open, setOpen] = useState(false);
+  const latest = thoughtLine(texts.at(-1) ?? '');
+  return (
+    <div className={`rv-think-group${open ? ' open' : ''}${sub}`}>
+      <div className="rv-think-head" onClick={() => setOpen((o) => !o)}>
+        <span className="rv-think-caret">{open ? '▾' : '▸'}</span>
+        <span className="rv-think-tag">Thinking</span>
+        {texts.length > 1 && <span className="rv-think-count">{texts.length} thoughts</span>}
+        {!open && <span className="rv-think-preview">{latest.slice(0, 180)}</span>}
+      </div>
+      {open && texts.map((t, i) => <Prose key={i} text={t} className="rv-think-para" />)}
     </div>
   );
 }
@@ -202,6 +230,9 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     }
     return { ends, resolved, lastReply, status };
   }, [events]);
+
+  const density = useStore((s) => s.richDensity);
+  const thinking = useMemo(() => foldThinking(events), [events]);
 
   const catalog = useMemo(() => commandCatalog(info), [info]);
   const paletteQuery = /^\/([\w:.@-]*)$/.exec(draft)?.[1];
@@ -369,19 +400,23 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       case 'text':
         return <Prose key={key} text={e.text} className={`rv-text${sub}`} />;
       case 'thinking': {
-        const first = e.text.replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim();
-        return (
-          <details key={key} className={`rv-thinking${sub}`}>
-            <summary><span className="rv-think-tag">Thinking</span><span className="rv-think-preview">{first.slice(0, 160)}</span></summary>
-            <Prose text={e.text} className="rv-think-body" />
-          </details>
-        );
+        if (density === 'focus') return null;
+        if (density === 'detailed') {
+          return (
+            <div key={key} className={`rv-think-open${sub}`}>
+              <span className="rv-think-tag">Thinking</span>
+              <Prose text={e.text} className="rv-think-para" />
+            </div>
+          );
+        }
+        if (thinking.folded.has(seq)) return null;
+        return <ThinkingGroup key={key} texts={thinking.groups.get(seq) ?? [e.text]} sub={sub} />;
       }
       case 'tool_start': {
         const end = ends.get(e.toolUseId);
         const state = !end ? 'running' : end.isError ? 'error' : 'ok';
         return (
-          <details key={key} className={`rv-tool ${state}${sub}`} open={state === 'error'}>
+          <details key={key} className={`rv-tool ${state}${sub}${density === 'detailed' ? ' compact' : ''}`} open={state === 'error'}>
             <summary>
               <span className="rv-dot">{state === 'running' ? '◌' : state === 'error' ? '✗' : '⏺'}</span>
               <span className="rv-tool-name">{e.tool}</span>
@@ -505,6 +540,12 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           <span className="muted">{working ? `working${session.agentState?.tool ? `: ${session.agentState.tool}` : ''}` : connected ? 'ready' : 'disconnected'}</span>
           {note && <span className="rv-toast">{note}</span>}
           <span className="strip-spacer" />
+          <div className="seg small rv-density" title="How much thinking to show (⌥⌘T)">
+            {DENSITIES.map((d) => (
+              <button key={d.id} className={`seg-btn ${density === d.id ? 'on' : ''}`} title={`${d.detail} (⌥⌘T cycles)`}
+                onClick={() => setDensity(d.id)}>{d.label}</button>
+            ))}
+          </div>
           <button className="chip-btn ghost" title="Reopen this conversation in Claude Code's own screen" disabled={!connected}
             onClick={() => void openTerminal(null)}>Open in terminal</button>
           {working && <button className="chip-btn" onClick={() => void rpc('rich.interrupt', { id: session.id }).catch(() => {})}>Interrupt <kbd>esc</kbd></button>}
