@@ -13,6 +13,7 @@ export function App() {
   const sidebar = useStore((s) => s.sidebar);
   const dialog = useStore((s) => s.dialog);
   const error = useStore((s) => s.error);
+  const health = useStore((s) => s.snapshot?.health ?? null);
   const connected = useStore((s) => s.status.connected);
   const statusError = useStore((s) => s.status.error);
   const active = useStore((s) => activeSession(s));
@@ -66,6 +67,7 @@ export function App() {
           </div>
         </header>
         {!connected && <div className="banner">{statusError || 'Connecting to jarvisd…'}</div>}
+        {connected && health && <div className="banner error">{health}</div>}
         {error && <div className="banner error">{error}</div>}
         <div className="workspace">
           <TerminalHost />

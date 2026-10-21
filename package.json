@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "A terminal built around running many Claude and Codex sessions across repos",
+  "license": "MIT",
   "packageManager": "pnpm@10.33.0",
   "engines": { "node": ">=22.13" },
   "scripts": {
@@ -12,6 +13,7 @@
     "dev": "pnpm build:daemon && pnpm --filter @jarvis/desktop dev",
     "start": "pnpm build && pnpm --filter @jarvis/desktop start",
     "package": "pnpm build && pnpm --filter @jarvis/desktop package",
+    "install:local": "sh scripts/install-local.sh",
     "typecheck": "pnpm -r run typecheck",
     "test": "vitest run",
     "e2e": "pnpm build && node e2e/relaunch.e2e.mjs",

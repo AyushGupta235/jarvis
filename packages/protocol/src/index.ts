@@ -274,6 +274,8 @@ export interface DaemonInfo {
 
 export interface Snapshot {
   daemon: DaemonInfo;
+  /** Set while jarvisd can't see tmux (so session state on screen may be stale), with what to do about it. */
+  health: string | null;
   agents: AgentDef[];
   prs: PrState;
   limits: UsageSummary['limits'];

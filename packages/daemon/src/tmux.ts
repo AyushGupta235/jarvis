@@ -91,7 +91,9 @@ export class Tmux {
       return parseSessionList(await this.run(['list-sessions', '-F', LIST_FORMAT]));
     } catch (e) {
       const msg = (e as Error).message;
-      if (/no server running|error connecting|No such file or directory/i.test(msg)) return [];
+      // Only a missing server means "no sessions". Anything else (permission denied, out of files) must not
+      // read as every session having ended, so it throws and the app shows a stale-state banner instead.
+      if (/no server running|No such file or directory/i.test(msg)) return [];
       throw e;
     }
   }

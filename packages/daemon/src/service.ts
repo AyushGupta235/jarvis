@@ -63,6 +63,16 @@ export function buildAgentCommand(
   return parts.map(shellQuote).join(' ');
 }
 
+/** What to show when polling tmux fails. Running out of file handles is a machine-wide problem, so say so. */
+export function pollHealthMessage(e: unknown): string {
+  const msg = String((e as Error)?.message ?? e);
+  if (/ENFILE/.test(msg)) {
+    return 'macOS is out of open files (ENFILE), so Jarvis cannot see tmux and session state may be stale. Some other app is holding too many files; quit it, or check `sysctl kern.num_files kern.maxfiles`.';
+  }
+  if (/EMFILE/.test(msg)) return 'jarvisd hit its open-file limit (EMFILE), so session state may be stale. `jarvis daemon restart` clears it.';
+  return `Jarvis cannot reach tmux, so session state may be stale: ${(msg.split('\n')[0] ?? '').slice(0, 200)}`;
+}
+
 export interface ServiceOptions {
   db: Db;
   tmux: Tmux;
@@ -91,6 +101,7 @@ export class JarvisService extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private tick = 0;
   private polling = false;
+  private health: string | null = null;
 
   private publishTimer: NodeJS.Timeout | null = null;
 
@@ -167,10 +178,13 @@ export class JarvisService extends EventEmitter {
         this.external = await this.o.externalTmux.listSessions().catch(() => []);
       }
       this.tick++;
+      this.health = null;
       await this.reconcile();
       this.publish();
     } catch (e) {
       logError('poll failed', e);
+      this.health = pollHealthMessage(e);
+      this.publish();
     } finally {
       this.polling = false;
     }
@@ -228,7 +242,10 @@ export class JarvisService extends EventEmitter {
         });
       }
     }
-    return { daemon: this.o.info, agents: this.o.agents.list(), prs: this.o.prs.state, limits: this.limits(), sessions, workspaces: [...wsMap.values()] };
+    return {
+      daemon: this.o.info, health: this.health, agents: this.o.agents.list(), prs: this.o.prs.state, limits: this.limits(), sessions,
+      workspaces: [...wsMap.values()],
+    };
   }
 
   private toInfo(r: SessionRow): SessionInfo {

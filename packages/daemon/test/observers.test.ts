@@ -7,6 +7,7 @@ import { Db } from '../src/db';
 import { Observers, toolSummary } from '../src/observers';
 import { CodexObserver } from '../src/codex';
 import { parseAccounts, pickBranchPr } from '../src/prs';
+import { pollHealthMessage } from '../src/service';
 import type { PullRequest } from '@jarvis/protocol';
 import { projectOf } from '../src/usage';
 
@@ -136,6 +137,11 @@ describe('misc parsers', () => {
     expect(pickBranchPr([merged1, merged2], 'O/R', 'feat')?.number).toBe(2);
     expect(pickBranchPr([merged2, pr({ number: 3, role: 'reviewer' }), pr({ number: 4 })], 'o/r', 'feat')?.number).toBe(4);
     expect(pickBranchPr([merged2], 'o/r', 'other')).toBeNull();
+  });
+  it('explains tmux poll failures, calling out a machine-wide file limit', () => {
+    expect(pollHealthMessage(new Error('tmux list-sessions: spawn /opt/homebrew/bin/tmux ENFILE'))).toMatch(/macOS is out of open files/);
+    expect(pollHealthMessage(new Error('spawn tmux EMFILE'))).toMatch(/jarvis daemon restart/);
+    expect(pollHealthMessage(new Error('boom\nstack'))).toBe('Jarvis cannot reach tmux, so session state may be stale: boom');
   });
   it('rolls worktrees up to their repo', () => {
     expect(projectOf('/x/repo/.claude/worktrees/feat-1/src')).toBe('/x/repo');
