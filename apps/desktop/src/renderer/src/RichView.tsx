@@ -4,19 +4,21 @@ import { ago, isLocalUrl, openInViewer, openPreview, rpc, sessionRoot, setState,
 import { Prose } from './ProseView';
 import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
+import { shortenCommand, shortenPaths } from './toolText';
 import { DENSITIES } from '../../shared/themes';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, commandCatalog, matchCommands, parseCommand, type Command,
 } from './richCommands';
 
 /** One line describing a tool call, like the Activity tab. */
-function toolLine(tool: string, input: unknown): string {
+function toolLine(tool: string, input: unknown, cwd = ''): string {
   const i = (input ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === 'string' ? v : '');
   const one = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 220);
-  if (tool === 'Bash') return one(str(i.command));
-  if (tool === 'Read' || tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit') return str(i.file_path) || str(i.notebook_path);
-  if (tool === 'Grep' || tool === 'Glob') return `${str(i.pattern)}${i.path ? `  in ${str(i.path)}` : ''}`;
+  const home = window.jarvis.homeDir;
+  if (tool === 'Bash') return one(shortenCommand(str(i.command), cwd, home));
+  if (tool === 'Read' || tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit') return shortenPaths(str(i.file_path) || str(i.notebook_path), cwd, home);
+  if (tool === 'Grep' || tool === 'Glob') return `${str(i.pattern)}${i.path ? `  in ${shortenPaths(str(i.path), cwd, home)}` : ''}`;
   if (tool === 'Agent' || tool === 'Task') return one(str(i.description) || str(i.prompt));
   if (tool === 'WebFetch') return str(i.url);
   if (tool === 'WebSearch') return str(i.query);
@@ -122,6 +124,68 @@ function ThinkingGroup({ texts, sub }: { texts: string[]; sub: string }) {
       {open && texts.map((t, i) => <Prose key={i} text={t} className="rv-think-para" />)}
     </div>
   );
+}
+
+/** One run of the agent's work: its rows, plus what the collapsed summary needs. */
+interface WorkRun {
+  key: string;
+  rows: React.ReactNode[];
+  tools: { name: string; arg: string; state: 'running' | 'ok' | 'error' }[];
+  thoughts: number;
+}
+
+/**
+ * Tool calls and thinking are the agent working, not talking to you: each run of them sits in a recessed panel,
+ * smaller and dimmer than Claude's messages. A run with several steps folds to one row ("6 steps · Read ×3 ·
+ * Bash ×2") that shows the latest step while it works and opens to the individual calls.
+ */
+function WorkBlock({ run, startOpen }: { run: WorkRun; startOpen: boolean }) {
+  const [open, setOpen] = useState(startOpen);
+  useEffect(() => setOpen(startOpen), [startOpen]);
+  const steps = run.tools.length + (run.thoughts ? 1 : 0);
+  if (run.rows.length <= 1 || steps <= 1) return <div className="rv-work">{run.rows}</div>;
+  const counts = new Map<string, number>();
+  for (const t of run.tools) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
+  const names = [...counts.entries()].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(' · ');
+  const running = run.tools.some((t) => t.state === 'running');
+  const failed = run.tools.filter((t) => t.state === 'error').length;
+  const latest = [...run.tools].reverse().find((t) => t.state === 'running') ?? run.tools.at(-1);
+  return (
+    <div className={`rv-work grouped${open ? ' open' : ''}`}>
+      <div className="rv-work-head" onClick={() => setOpen((o) => !o)}>
+        <span className={`rv-dot${running ? ' running' : ''}`}>{running ? '◌' : open ? '▾' : '▸'}</span>
+        <span className="rv-work-count">{run.tools.length} {run.tools.length === 1 ? 'step' : 'steps'}</span>
+        <span className="rv-work-names">{names}{run.thoughts ? ` · ${run.thoughts} thought${run.thoughts === 1 ? '' : 's'}` : ''}</span>
+        {failed > 0 && <span className="rv-work-failed">{failed} failed</span>}
+        {!open && latest && <span className="rv-work-latest">{latest.name} {latest.arg}</span>}
+      </div>
+      {open && <div className="rv-work-body">{run.rows}</div>}
+    </div>
+  );
+}
+
+function workRuns(
+  rows: React.ReactNode[], events: RichEnvelope[], ends: Map<string, { isError: boolean }>, cwd: string,
+): (React.ReactNode | WorkRun)[] {
+  const out: (React.ReactNode | WorkRun)[] = [];
+  let run: WorkRun | null = null;
+  rows.forEach((el, i) => {
+    if (!el) return;
+    const e = events[i]!.event;
+    if (e.kind === 'tool_start' || e.kind === 'thinking') {
+      if (!run) out.push((run = { key: String(events[i]!.seq), rows: [], tools: [], thoughts: 0 }));
+      run.rows.push(el);
+      if (e.kind === 'thinking') run.thoughts++;
+      else {
+        const end = ends.get(e.toolUseId);
+        run.tools.push({ name: e.tool, arg: toolLine(e.tool, e.input, cwd), state: !end ? 'running' : end.isError ? 'error' : 'ok' });
+      }
+    } else {
+      run = null;
+      out.push(el);
+    }
+  });
+  return out;
 }
 
 type PickerState = { title: string; items: PickItem[] | null; onPick?: (it: PickItem) => void; empty?: string } | null;
@@ -420,7 +484,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
             <summary>
               <span className="rv-dot">{state === 'running' ? '◌' : state === 'error' ? '✗' : '⏺'}</span>
               <span className="rv-tool-name">{e.tool}</span>
-              <span className="rv-tool-arg">{toolLine(e.tool, e.input)}</span>
+              <span className="rv-tool-arg">{toolLine(e.tool, e.input, session.cwd)}</span>
             </summary>
             <pre className="rv-io">{JSON.stringify(e.input, null, 2)}</pre>
             {end && <pre className={`rv-io out${end.isError ? ' err' : ''}`}>{end.output || '(no output)'}</pre>}
@@ -435,7 +499,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         return (
           <div key={key} className="rv-perm">
             <div className="rv-perm-title">Allow <b>{e.tool}</b>?</div>
-            <div className="rv-perm-arg">{toolLine(e.tool, e.input)}</div>
+            <div className="rv-perm-arg">{toolLine(e.tool, e.input, session.cwd)}</div>
             {e.reason && <div className="rv-perm-reason">{e.reason}</div>}
             <div className="rv-perm-actions">
               <button className="btn primary" disabled={!connected} onClick={() => respond(e.requestId, 'allow')}>Allow</button>
@@ -485,7 +549,9 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       }}>
         <div className="rv-column" key={look}>
           {!events.length && <div className="rv-empty">{connected ? 'Send a message to start. Type / for commands.' : 'Connecting to the session…'}</div>}
-          {rows}
+          {workRuns(rows, events, ends, session.cwd).map((x) => (x && typeof x === 'object' && 'tools' in x
+            ? <WorkBlock key={`work-${x.key}`} run={x} startOpen={density === 'detailed'} />
+            : x))}
         </div>
       </div>
       <div className="rv-composer">

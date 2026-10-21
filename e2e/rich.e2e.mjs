@@ -172,7 +172,10 @@ try {
   await waitFor(() => existsSync(join(repo, 'notes.txt')), 'notes.txt', 60_000);
   await waitFor(async () => (await lastReply(win)).includes('WROTE'), 'WROTE reply', 60_000);
   check('Allow in the permission card lets the tool run', readFileSync(join(repo, 'notes.txt'), 'utf8').includes('hello'));
-  check('tool call renders as a Write row', await win.evaluate(() => [...document.querySelectorAll('.rv-tool-name')].some((e) => e.textContent === 'Write')));
+  // Several steps fold into one expandable row; open it like a person would, then find the Write call.
+  const folded = await win.$('.rich-wrap:not([style*="none"]) .rv-work.grouped:not(.open) .rv-work-head');
+  if (folded) await folded.click();
+  check('tool call renders as a Write row in a work panel', await win.evaluate(() => [...document.querySelectorAll('.rv-work .rv-tool-name')].some((e) => e.textContent === 'Write')));
   await waitFor(async () => (await win.evaluate((id) => window.jarvis.rpc('activity.list', { id, limit: 50 }), s.id)).some((e) => e.tool === 'Write'), 'activity entry', 15_000)
     .then(() => check('hooks feed the Activity tab for rich sessions too', true))
     .catch(() => check('hooks feed the Activity tab for rich sessions too', false));

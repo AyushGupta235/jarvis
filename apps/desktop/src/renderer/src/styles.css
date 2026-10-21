@@ -737,3 +737,25 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .rail-item .dot { position: absolute; right: 3px; bottom: 3px; width: 8px; height: 8px; border: 1.5px solid var(--surface); box-sizing: content-box; }
 .rail-item.needs_input { box-shadow: inset 0 0 0 1.5px var(--gold); }
 .rail-foot { padding: 10px 0; }
+
+/* Work panels: tool calls and thinking, recessed so Claude's messages read first */
+.rv-work { margin: 8px 0 12px; padding: 6px 10px 6px 8px; border-radius: 9px; background: rgb(var(--text-rgb) / 0.028); border: 1px solid rgb(var(--text-rgb) / 0.06); }
+.rv-work .rv-tool { margin: 1px 0; }
+.rv-work .rv-tool summary { font-size: 11.5px; line-height: 1.55; }
+.rv-work .rv-tool-name { color: var(--subtle); font-weight: 600; }
+.rv-work .rv-tool-arg { color: var(--muted); }
+.rv-work .rv-dot { font-size: 9px; opacity: 0.85; }
+.rv-work .rv-tool:hover .rv-tool-name, .rv-work .rv-tool[open] .rv-tool-name { color: var(--text); }
+.rv-work .rv-tool:hover .rv-tool-arg, .rv-work .rv-tool[open] .rv-tool-arg { color: var(--text-soft); }
+.rv-work .rv-think-group, .rv-work .rv-think-open { margin: 4px 0; }
+.rv-work .rv-think-group:first-child, .rv-work .rv-think-open:first-child { margin-top: 2px; }
+.rv-work.grouped { padding: 5px 10px 5px 8px; }
+.rv-work-head { display: flex; align-items: baseline; gap: 8px; cursor: pointer; font-size: 11.5px; color: var(--muted); min-width: 0; }
+.rv-work-head:hover { color: var(--text-soft); }
+.rv-work-head .rv-dot { width: 10px; flex: none; color: var(--muted); }
+.rv-work-head .rv-dot.running { color: var(--gold); }
+.rv-work-count { color: var(--subtle); font-weight: 600; flex: none; }
+.rv-work-names { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-work-failed { flex: none; color: var(--love); }
+.rv-work-latest { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; opacity: 0.8; }
+.rv-work-body { margin-top: 4px; padding-top: 4px; border-top: 1px solid rgb(var(--text-rgb) / 0.06); }
