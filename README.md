@@ -1,3 +1,5 @@
+<p align="center"><img src="apps/desktop/build/icon.png" width="128" alt="Jarvis icon"></p>
+
 # Jarvis
 
 A terminal built for running many coding agents across many repos from one window.
