@@ -154,9 +154,17 @@ async function daemonCmd(sub: string | undefined): Promise<void> {
       console.log('jarvisd stopped (tmux sessions keep running)');
       return;
     case 'restart':
-      if (await alive()) await rpc('daemon.shutdown');
-      for (let i = 0; i < 30 && (await alive()); i++) await new Promise((r) => setTimeout(r, 100));
-      await ensureDaemon();
+      if (launchdLoaded()) {
+        // Let launchd stop and start the job itself. Asking the daemon to exit and then kickstarting races: if
+        // the old process is still exiting, the kickstart is a no-op, and a clean exit isn't restarted.
+        spawnSync('launchctl', ['kickstart', '-k', `gui/${uid}/${LABEL}`], { stdio: 'ignore' });
+        for (let i = 0; i < 50 && !(await alive()); i++) await new Promise((r) => setTimeout(r, 100));
+        await ensureDaemon();
+      } else {
+        if (await alive()) await rpc('daemon.shutdown');
+        for (let i = 0; i < 30 && (await alive()); i++) await new Promise((r) => setTimeout(r, 100));
+        await ensureDaemon();
+      }
       console.log('jarvisd restarted');
       return;
     case 'install': {

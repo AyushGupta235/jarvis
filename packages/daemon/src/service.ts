@@ -104,6 +104,7 @@ export class JarvisService extends EventEmitter {
   private tick = 0;
   private polling = false;
   private health: string | null = null;
+  private pollFailures = 0;
 
   private publishTimer: NodeJS.Timeout | null = null;
 
@@ -186,12 +187,16 @@ export class JarvisService extends EventEmitter {
       }
       this.tick++;
       this.health = null;
+      this.pollFailures = 0;
       await this.reconcile();
       this.publish();
     } catch (e) {
       logError('poll failed', e);
-      this.health = pollHealthMessage(e);
-      this.publish();
+      // One failed poll is usually a blip; warn once it repeats, so the banner means something is really wrong.
+      if (++this.pollFailures >= 2) {
+        this.health = pollHealthMessage(e);
+        this.publish();
+      }
     } finally {
       this.polling = false;
     }
