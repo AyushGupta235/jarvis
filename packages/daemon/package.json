@@ -1,0 +1,17 @@
+{
+  "name": "@jarvis/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "jarvisd: owns tmux sessions, the session registry and the socket API",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/jarvisd.cjs --external:bufferutil --external:utf-8-validate --log-level=warning",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@jarvis/protocol": "workspace:*",
+    "@types/ws": "^8.18.2"
+  }
+}

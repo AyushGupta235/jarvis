@@ -1,0 +1,14 @@
+{
+  "name": "@jarvis/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "jarvis: command line client for jarvisd",
+  "bin": { "jarvis": "dist/jarvis.cjs" },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/jarvis.cjs --banner:js='#!/usr/bin/env node' --log-level=warning && chmod +x dist/jarvis.cjs",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@jarvis/protocol": "workspace:*"
+  }
+}

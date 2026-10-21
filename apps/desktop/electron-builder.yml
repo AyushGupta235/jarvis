@@ -1,0 +1,23 @@
+appId: dev.jarvis.app
+productName: Jarvis
+copyright: Ayush Gupta
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+asarUnpack:
+  - "**/node_modules/node-pty/**"
+extraResources:
+  - from: ../../packages/daemon/dist/jarvisd.cjs
+    to: jarvisd.cjs
+npmRebuild: false
+mac:
+  target: dir
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  identity: null
+  darkModeSupport: true
+  extendInfo:
+    NSHighResolutionCapable: true
