@@ -2,7 +2,7 @@
 
 *Jarvis*: one window that holds every terminal and every coding agent you run (Claude Code, Codex, Pi on a local model, OpenCode, a plain shell), across every repo. CLI `jarvis`, daemon `jarvisd`, tmux socket `-L jarvis`.
 
-**Principle (2026-10-21): Jarvis is a terminal, not an agent UI.** Every agent runs as its own unmodified CLI in a real terminal pane. Jarvis launches, persists, switches and observes them. It never re-implements an agent's chat interface. Agent-specific knowledge lives in small launch recipes (the agent registry) and read-only observers (hooks, session logs), so adding a new agent is a JSON entry, not a feature.
+**Principle (2026-10-21, amended the same day): Jarvis is a terminal first.** Every agent runs as its own unmodified CLI in a real terminal pane. Jarvis launches, persists, switches and observes them. The terminal is the universal mode. Agents with a structured API can also run in an optional rich view drawn by Jarvis (Claude through the Agent SDK first, see [RICH-VIEW.md](RICH-VIEW.md)), sharing one conversation with the terminal mode. Agent-specific knowledge lives in small launch recipes (the agent registry) and read-only observers (hooks, session logs), so adding a new agent is a JSON entry, not a feature.
 
 Written 2026-10-21 from your own Claude transcripts (May to Oct 2026), the current open source landscape, and the official Claude Agent SDK, Claude Code hooks and status line docs, and the Codex app-server docs.
 
@@ -31,10 +31,7 @@ Source: `~/.claude/projects` (3,985 JSONL files, 2.5 GB). After excluding ~1,000
 | Top tools | Bash 33.9k, Edit 3.4k, Read 3.3k, Agent 2.0k, browser automation ~1.7k, SendMessage 324 |
 | Slash commands typed | /compact 181, /copy 114, /model 91, /effort 9 |
 | Tokens (5 months) | 35.4B cache-read, 1.17B cache-write, 109M output |
-| Working hours (local) | two bands: 00:00 to 05:00 and 09:00 to 16:00; Tue to Thu heaviest |
 | Languages edited | .md 1.9k, .ts/.tsx 2.2k, .py 1.3k, .go 0.7k, .sh 0.5k |
-
-Custom subagent types you run (your eval harness): builder, lesson-scout, source-reader, blind-verifier, plus general-purpose and Explore.
 
 The 2026-10-21 "WezTerm consuming 80 GB" incident: the root cause was orphaned claude-mem worker services, not WezTerm. The real gap was that nothing showed memory per session, so the first signal was the laptop freezing.
 
@@ -173,10 +170,11 @@ Phase order is by daily value: P0 + P1 alone replace WezTerm for you.
 **Cockpit (shipped 2026-10-21, after P0):** observers for Claude (hooks + status line via `--settings`, never touching `~/.claude/settings.json`) and Codex (rollout logs); live session state with notifications, dock badge and ⇧⌘U; Activity timeline with subagent attribution; Files / Changes / Docs navigator and a split file viewer (Shiki, markdown, diffs, `@path#L` references); PRs across all gh accounts; MCP connectors with real call counts; Pulse (plan limits, usage history, fun numbers); quote-reply. Acceptance: `pnpm e2e`, 44 checks.
 
 **Next, in order:**
-1. Quick actions: model / effort / compact buttons that type the agent's own slash commands.
-2. P4: the global-hotkey dropdown terminal.
-3. An always-on host: jarvisd + tmux on a machine that stays awake (SSH), so agents keep working with the lid closed.
-4. Verify Codex CLI and Pi recipes once installed (resume args, approval events).
+1. Rich view for Claude sessions through the Agent SDK, next to the terminal: phases R0 to R4 in [RICH-VIEW.md](RICH-VIEW.md). R0 (hosts, persistence, plain text) is done; R1 (renderers, including MCP, API and test-run cards) is next.
+2. Quick actions: model / effort / compact buttons that type the agent's own slash commands.
+3. P4: the global-hotkey dropdown terminal.
+4. An always-on host: jarvisd + tmux on a machine that stays awake (SSH), so agents keep working with the lid closed.
+5. Verify Codex CLI and Pi recipes once installed (resume args, approval events).
 
 P0 shipped with more than planned: the agent registry (any CLI agent, `~/.jarvis/agents.json`), revive with `claude --resume` after a session's tmux is gone, a quick switcher (⌘P), and a packaged `Jarvis.app`. Its acceptance test is `pnpm e2e` (see README).
 
@@ -201,7 +199,7 @@ P0 shipped with more than planned: the agent registry (any CLI agent, `~/.jarvis
 3. **tmux on a private socket** rather than the app owning PTYs. Reason: you asked for it, it gives crash/upgrade immunity, and `ssh`/phone access later is free.
 4. **Wrap your existing status line and hooks** instead of replacing them.
 5. **Agent-agnostic from P0.** Agents are launch recipes in a registry (`~/.jarvis/agents.json` for your own). Codex and Pi observers come in P5; until then they already run, persist and revive like Claude, without the Timeline.
-7. **No agent UI re-implementation.** No SDK-driven chat panes; agents keep their own TUIs.
+7. **Terminal first, rich view optional.** Every agent keeps its own TUI in the terminal mode. SDK-driven rich sessions are an opt-in per session (RICH-VIEW.md), never a replacement.
 6. **Mac only.** No cross-platform concessions.
 
 ---

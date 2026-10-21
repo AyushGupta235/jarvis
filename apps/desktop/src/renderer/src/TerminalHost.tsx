@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { SessionInfo } from '@jarvis/protocol';
 import { TerminalView } from './TerminalView';
+import { RichView } from './RichView';
 import { activeSession, agentDef, ago, rpc, setState, tildify, useStore } from './store';
 
 /** How many tmux clients stay attached (and xterm instances alive) for fast switching. */
@@ -21,8 +22,9 @@ export function TerminalHost() {
 
   return (
     <div className="terminals">
-      {live.map((s) => (
-        <TerminalView key={s.id} session={s} visible={s.id === active?.id} />
+      {live.map((s) => (s.mode === 'rich'
+        ? <RichView key={s.id} session={s} visible={s.id === active?.id} />
+        : <TerminalView key={s.id} session={s} visible={s.id === active?.id} />
       ))}
       {active?.status === 'exited' && <ExitedCard session={active} />}
       {!active && <EmptyState />}

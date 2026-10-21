@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { SessionInfo } from '@jarvis/protocol';
 import { activity, agentDef, ago, fmtUsd, groups, setState, tildify, until, useStore } from './store';
-import { checksIcon } from './nav/PrsTab';
+import { prIcon } from './nav/PrsTab';
 import { activate, sessionContextMenu } from './actions';
 
 function useNow(ms = 1000): number {
@@ -123,7 +123,7 @@ function Row({ s, index, active, now }: { s: SessionInfo; index: number; active:
     : act === 'working' && a?.tool ? a.tool
     : a?.title && a.title !== s.name ? `${a.title} · ${base}` : base;
   const pct = a?.context?.usedPct ?? null;
-  const pr = s.pr ? checksIcon(s.pr.checks) : null;
+  const pr = s.pr ? prIcon(s.pr) : null;
   return (
     <div
       className={`row ${active ? 'active' : ''} ${s.hidden ? 'is-hidden' : ''} ${act} ${unread && !active ? 'unread' : ''}`}

@@ -59,6 +59,18 @@ The window has three parts: the session sidebar on the left, the terminal in the
 - **Pulse (⌥⌘7).** Plan limits with reset countdowns (Claude 5-hour and weekly; Codex windows), and the fun numbers: today's tokens and API-equivalent cost against your average, tool calls, lines written by agents, words of output, sessions and peak concurrency, cache hit rate and what it saved, your streak, a 30-day chart, the hour-of-day heatmap, model mix, top tools and top repos.
 - **Quote-reply.** Drag over something the agent said and click **❝ Quote in reply** (or press **⌘'**). It lands in the prompt as a `>` quote, ready for you to type underneath.
 
+### Rich view (early)
+
+Claude sessions can also run in a rich view: pick **Rich (SDK)** under View in ⌘T, or run `jarvis new --rich`. The session runs through the Agent SDK in a small host process, and Jarvis draws it instead of showing Claude Code's TUI. It is on your Claude plan, and it uses your CLAUDE.md, hooks, skills and MCP servers like the CLI does.
+
+For now (phase R0 of [RICH-VIEW.md](RICH-VIEW.md)) it is plain text:
+- Messages, plus one row per tool call. Click a row for its input and output.
+- Allow and Deny buttons for permission prompts.
+- A composer: ↵ sends, ⇧↵ adds a newline, esc interrupts.
+- ⌘' quotes the selected text into the composer.
+
+Rich sessions persist the way terminal ones do. They survive quitting Jarvis and restarting jarvisd, and if their host dies, revive resumes the conversation. The conversation is a normal Claude transcript, so `claude --resume <id>` opens it in a terminal too.
+
 ### From any terminal
 
 ```bash
@@ -134,7 +146,7 @@ Measured on 2026-10-21 with 20 sessions open: the app's processes total about 42
 
 ## FAQ
 
-**Does it use the Claude or Codex SDKs?** No. Each agent runs as its own CLI in a terminal, exactly as if you'd typed `claude` or `codex`. Swapping harness is picking a different agent in ⌘T, or adding one to `agents.json`.
+**Does it use the Claude or Codex SDKs?** Terminal sessions don't: each agent runs as its own CLI, exactly as if you'd typed `claude` or `codex`, and swapping harness is picking a different agent in ⌘T or adding one to `agents.json`. The optional rich view for Claude runs on the Agent SDK (see above).
 
 **Do sessions survive closing the laptop?** Sleep, yes: tmux and every agent are suspended with the machine and carry on when it wakes. A request that was in flight may need a retry, and Claude Code retries API errors itself. A shutdown or restart ends the processes. The sessions stay in the sidebar as "ended", and Enter revives them; Claude picks up its conversation with `claude --resume`. Nothing keeps working while the lid is closed. For that, the agents have to run on a machine that stays on, which is on the roadmap.
 
@@ -152,6 +164,7 @@ pnpm dev
 | `pnpm typecheck` | Type-check all packages |
 | `pnpm test` | Unit tests (vitest) |
 | `pnpm e2e` | Acceptance test, below |
+| `pnpm e2e:rich` | Rich-view acceptance test (23 checks, a few Haiku calls). `--packaged` runs it against the built app |
 | `pnpm package` | Build `apps/desktop/release/mac-arm64/Jarvis.app` |
 
 The acceptance test drives the real app through Playwright in throwaway git repos, with an isolated `JARVIS_HOME`, tmux socket and Electron profile. It starts 5 Claude sessions (Haiku) plus a shell and a user-defined agent across 3 repos. It sends prompts, quits Jarvis, relaunches it, and checks that every session reattaches with the same process, screen, conversation and scrollback. It then kills a session's tmux outright and checks that revive resumes the conversation. Pass `--packaged` to test the built `.app`, or `--claude N` to change the session count. It costs a few Haiku calls.

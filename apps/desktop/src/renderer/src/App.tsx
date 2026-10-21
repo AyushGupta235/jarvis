@@ -5,7 +5,7 @@ import { NewSessionDialog, OpenFileDialog, QuickSwitcher, RenameDialog } from '.
 import { Navigator } from './nav/Navigator';
 import { Viewer } from './Viewer';
 import { Resizer } from './Resizer';
-import { checksIcon } from './nav/PrsTab';
+import { prIcon } from './nav/PrsTab';
 import { activeSession, fmtTokens, fmtUsd, setState, syncUi, tildify, useStore } from './store';
 import { handleMenu } from './actions';
 
@@ -40,10 +40,11 @@ export function App() {
               <span className="tb-name">{active.name}</span>
               <span className="tb-sep">·</span>
               <span className="tb-repo">{wsName}</span>
+              {active.mode === 'rich' && <span className="chip rich" title="Driven through the Agent SDK and drawn by Jarvis">rich</span>}
               {active.worktree && <span className="chip">⑂ {active.worktree.split('/').pop()}</span>}
               {active.branch && <span className="chip branch">{active.branch}</span>}
               {active.pr && (() => {
-                const c = checksIcon(active.pr.checks);
+                const c = prIcon(active.pr);
                 return (
                   <button className={`chip pr no-drag ${c.cls}`} title={`${active.pr.title}\n${c.label}`} onClick={() => window.jarvis.openExternal(active.pr!.url)}>
                     {c.icon} #{active.pr.number}

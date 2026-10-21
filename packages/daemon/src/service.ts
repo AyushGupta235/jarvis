@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import type {
   ActivityEntry, AgentDef, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent,
-  FileEntry, RepoCandidate, SessionInfo, Snapshot, UsageSummary, WorkspaceInfo,
+  FileEntry, RepoCandidate, RichEnvelope, SessionInfo, Snapshot, UsageSummary, WorkspaceInfo,
 } from '@jarvis/protocol';
 import { execFile } from 'node:child_process';
 import { fill, type AgentRegistry } from './agents';
@@ -13,6 +13,7 @@ import type { Observers } from './observers';
 import type { CodexObserver } from './codex';
 import type { UsageIndexer } from './usage';
 import type { PrTracker, RemoteCache } from './prs';
+import type { RichSessions } from './rich';
 import { FileWatcher, changes as fileChanges, diff as fileDiff, listFiles, readFile } from './files';
 import { listDocs } from './docs';
 import { checkConnectors, listConnectors } from './connectors';
@@ -76,6 +77,7 @@ export interface ServiceOptions {
   prs: PrTracker;
   remotes: RemoteCache;
   files: FileWatcher;
+  rich: RichSessions;
   claudeSettings: string | null;
   socketPath: string;
   env: NodeJS.ProcessEnv;
@@ -123,6 +125,15 @@ export class JarvisService extends EventEmitter {
       if (r && r.agent_session_id !== agentSessionId) this.o.db.updateSession(id, { agent_session_id: agentSessionId });
     });
     o.files.on('changed', (c) => this.emit('files.changed', c));
+    o.rich.on('changed', () => void this.poll());
+    o.rich.on('event', (id: string, envelope: RichEnvelope) => {
+      this.emit('rich.event', { sessionId: id, envelope });
+      // Hooks report most state for rich sessions too; permission requests only exist on the SDK side.
+      const ev = envelope.event;
+      if (ev.kind === 'permission_request') o.observers.setPhase(id, 'needs_input', `Permission: ${ev.tool}`);
+      else if (ev.kind === 'permission_resolved' && o.observers.state(id)?.phase === 'needs_input') o.observers.setPhase(id, 'working');
+      else if (ev.kind === 'turn_end' && o.observers.state(id)?.phase !== 'done') o.observers.setPhase(id, 'done', ev.ok ? null : ev.error);
+    });
     for (const r of o.db.allSessions()) {
       o.observers.setCwd(r.id, r.cwd);
       if (this.o.agents.list().find((a) => a.id === r.agent)?.integration === 'codex' && r.status === 'running') {
@@ -132,7 +143,8 @@ export class JarvisService extends EventEmitter {
   }
 
   start(): void {
-    void this.poll();
+    const richIds = this.o.db.allSessions().filter((r) => r.mode === 'rich').map((r) => r.id);
+    void this.o.rich.restore(richIds).finally(() => void this.poll());
     this.timer = setInterval(() => void this.poll(), 1000);
   }
 
@@ -170,7 +182,7 @@ export class JarvisService extends EventEmitter {
     const byTmux = new Map(rows.map((r) => [r.tmux_name, r]));
     const now = Date.now();
     for (const r of rows) {
-      const alive = this.live.has(r.tmux_name);
+      const alive = r.mode === 'rich' ? this.o.rich.connected(r.id) : this.live.has(r.tmux_name);
       if (r.status === 'running' && !alive) {
         db.updateSession(r.id, { status: 'exited', exited_at: now });
         log(`session ${r.id} (${r.name}) exited`);
@@ -186,7 +198,7 @@ export class JarvisService extends EventEmitter {
       db.insertSession({
         id, tmux_name: s.name, name: s.name, agent: 'shell', model: null, agent_session_id: null,
         cwd: s.currentPath || homedir(), repo_root: loc.repoRoot, worktree: loc.worktree, hidden: 0,
-        status: 'running', created_at: s.created || now, exited_at: null, sort_order: db.nextOrder(),
+        status: 'running', created_at: s.created || now, exited_at: null, sort_order: db.nextOrder(), mode: 'terminal', permission_mode: null,
       });
       if (s.jarvisId !== id) await this.o.tmux.run(['set-option', '-t', Tmux.paneTarget(s.name), '@jarvis_id', id]).catch(() => {});
       log(`adopted tmux session ${s.name} as ${id}`);
@@ -204,6 +216,7 @@ export class JarvisService extends EventEmitter {
         worktree: null, branch: this.branches.get(e.currentPath), hidden: false, status: 'running',
         createdAt: e.created, exitedAt: null, lastActivity: e.activity, attachedClients: e.attached,
         paneCommand: e.currentCommand, panePid: e.panePid, external: true, order: order++, agentState: null, pr: null,
+        mode: 'terminal', rich: null,
       });
     }
     const wsMap = new Map<string, WorkspaceInfo>();
@@ -219,18 +232,27 @@ export class JarvisService extends EventEmitter {
   }
 
   private toInfo(r: SessionRow): SessionInfo {
-    const l = this.live.get(r.tmux_name);
+    const isRich = r.mode === 'rich';
+    const l = isRich ? undefined : this.live.get(r.tmux_name);
     const path = l?.currentPath || r.cwd;
+    const running = isRich ? this.o.rich.connected(r.id) : !!l;
     return {
+      mode: r.mode,
+      rich: isRich ? { hostPid: this.o.rich.hostPid(r.id), connected: running } : null,
       id: r.id, tmuxName: r.tmux_name, name: r.name, agent: r.agent, model: r.model,
       agentSessionId: r.agent_session_id, cwd: r.cwd, currentPath: l?.currentPath ?? null,
       repoRoot: r.repo_root, worktree: r.worktree, branch: this.branches.get(path), hidden: !!r.hidden,
-      status: l ? 'running' : 'exited', createdAt: r.created_at, exitedAt: r.exited_at,
-      lastActivity: l?.activity ?? null, attachedClients: l?.attached ?? 0, paneCommand: l?.currentCommand ?? null,
+      status: running ? 'running' : 'exited', createdAt: r.created_at, exitedAt: r.exited_at,
+      lastActivity: l?.activity ?? (isRich ? this.richLastActivity(r.id) : null), attachedClients: l?.attached ?? 0,
+      paneCommand: l?.currentCommand ?? (isRich && running ? 'claude (rich)' : null),
       panePid: l?.panePid ?? null, external: false, order: r.sort_order,
       agentState: this.o.observers.state(r.id),
       pr: this.o.prs.forBranch(this.o.remotes.get(r.repo_root), this.branches.get(path)),
     };
+  }
+
+  private richLastActivity(id: string): number | null {
+    return this.o.rich.history(id).at(-1)?.ts ?? null;
   }
 
   publish(force = false): void {
@@ -254,18 +276,21 @@ export class JarvisService extends EventEmitter {
     if (def.command && def.available === false) {
       throw new Error(`${def.label} is not installed (\`${def.command}\` is not on your PATH)`);
     }
+    const mode = p.mode ?? 'terminal';
+    if (mode === 'rich' && def.integration !== 'claude') throw new Error(`Rich view needs Claude for now (${def.label} runs in the terminal)`);
     const loc = await locate(cwd);
     const id = shortId();
     const repoName = basename(loc.worktree ?? loc.repoRoot);
     const defaultName = this.uniqueName(p.agent === 'shell' ? `${repoName} shell` : repoName);
     const row: SessionRow = {
-      id, tmux_name: `j-${id}`, name: (p.name || '').trim() || defaultName, agent: p.agent,
+      id, tmux_name: mode === 'rich' ? `r-${id}` : `j-${id}`, name: (p.name || '').trim() || defaultName, agent: p.agent,
       model: def.command ? p.model || null : null,
-      agent_session_id: def.sessionIdArgs ? randomUUID() : null, cwd, repo_root: loc.repoRoot,
+      agent_session_id: def.sessionIdArgs || mode === 'rich' ? randomUUID() : null, cwd, repo_root: loc.repoRoot,
       worktree: loc.worktree, hidden: 0, status: 'running', created_at: Date.now(), exited_at: null,
-      sort_order: this.o.db.nextOrder(),
+      sort_order: this.o.db.nextOrder(), mode, permission_mode: mode === 'rich' ? p.permissionMode ?? null : null,
     };
-    await this.startTmux(row, { resume: false, extraArgs: p.extraArgs });
+    if (mode === 'rich') await this.startRich(row, false);
+    else await this.startTmux(row, { resume: false, extraArgs: p.extraArgs });
     this.o.db.insertSession(row);
     this.o.observers.setCwd(id, cwd);
     if (def.integration === 'codex') this.o.codex.track(id, cwd, Date.now());
@@ -279,6 +304,29 @@ export class JarvisService extends EventEmitter {
     const taken = new Set(this.o.db.allSessions().map((r) => r.name));
     if (!taken.has(base)) return base;
     for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`)) return `${base} ${n}`;
+  }
+
+  private async startRich(row: SessionRow, resume: boolean): Promise<void> {
+    await this.o.rich.start({
+      id: row.id, cwd: row.cwd, agentSessionId: row.agent_session_id!, resume, model: row.model, permissionMode: row.permission_mode,
+    });
+  }
+
+  richHistory(id: string): { events: RichEnvelope[]; connected: boolean } {
+    this.row(id);
+    return { events: this.o.rich.history(id), connected: this.o.rich.connected(id) };
+  }
+
+  richSend(id: string, text: string): void {
+    this.o.rich.send(id, text);
+  }
+
+  richInterrupt(id: string): void {
+    this.o.rich.interrupt(id);
+  }
+
+  richRespond(id: string, requestId: string, behavior: 'allow' | 'deny', message?: string): void {
+    this.o.rich.respond(id, requestId, behavior, message);
   }
 
   private async startTmux(row: SessionRow, opts: { resume: boolean; extraArgs?: string[] }): Promise<void> {
@@ -304,6 +352,17 @@ export class JarvisService extends EventEmitter {
 
   async revive(id: string): Promise<SessionInfo> {
     const r = this.row(id);
+    if (r.mode === 'rich') {
+      if (!this.o.rich.connected(id)) {
+        const resume = !!r.agent_session_id && claudeTranscriptExists(r.agent_session_id);
+        await this.startRich(r, resume);
+        this.o.db.updateSession(id, { status: 'running', exited_at: null });
+        this.o.observers.forget(id);
+        log(`revived rich session ${id} (resume=${resume})`);
+      }
+      await this.poll();
+      return this.toInfo(this.row(id));
+    }
     if (this.live.has(r.tmux_name)) return this.toInfo(r);
     const def = this.o.agents.get(r.agent);
     // Claude only writes a transcript after the first message; without one, --resume would fail, so start
@@ -321,14 +380,16 @@ export class JarvisService extends EventEmitter {
 
   async kill(id: string): Promise<void> {
     const r = this.row(id);
-    await this.o.tmux.run(['kill-session', '-t', Tmux.target(r.tmux_name)]).catch(() => {});
+    if (r.mode === 'rich') await this.o.rich.stop(id);
+    else await this.o.tmux.run(['kill-session', '-t', Tmux.target(r.tmux_name)]).catch(() => {});
     await this.poll();
   }
 
   async remove(id: string): Promise<void> {
     const r = this.o.db.getSession(id);
     if (!r) return;
-    await this.o.tmux.run(['kill-session', '-t', Tmux.target(r.tmux_name)]).catch(() => {});
+    if (r.mode === 'rich') await this.o.rich.stop(id);
+    else await this.o.tmux.run(['kill-session', '-t', Tmux.target(r.tmux_name)]).catch(() => {});
     this.o.db.deleteSession(id);
     this.o.observers.deleteSession(id);
     this.o.codex.untrack(id);
@@ -369,13 +430,16 @@ export class JarvisService extends EventEmitter {
       return { file: t.bin, args: ['-u', 'attach-session', '-t', Tmux.target(name)] };
     }
     const r = this.row(id);
+    if (r.mode === 'rich') throw new Error(`${r.name} runs in the rich view; open it in Jarvis`);
     if (!this.live.has(r.tmux_name)) throw new Error(`session ${id} is not running`);
     return { file: this.o.tmux.bin, args: [...this.o.tmux.baseArgs(), 'attach-session', '-t', Tmux.target(r.tmux_name)] };
   }
 
   private tmuxFor(id: string): { t: Tmux; name: string } {
     if (id.startsWith('ext:')) return { t: this.o.externalTmux ?? this.o.tmux, name: id.slice(4) };
-    return { t: this.o.tmux, name: this.row(id).tmux_name };
+    const r = this.row(id);
+    if (r.mode === 'rich') throw new Error(`${r.name} runs in the rich view, which has no terminal`);
+    return { t: this.o.tmux, name: r.tmux_name };
   }
 
   async sendKeys(id: string, text: string, enter = false): Promise<void> {
@@ -413,6 +477,12 @@ export class JarvisService extends EventEmitter {
   async copyMode(id: string): Promise<void> {
     const { t, name } = this.tmuxFor(id);
     await t.run(['copy-mode', '-t', Tmux.paneTarget(name)]);
+  }
+
+  async mouseState(id: string): Promise<{ appMouse: boolean }> {
+    const { t, name } = this.tmuxFor(id);
+    const out = await t.run(['display-message', '-p', '-t', Tmux.paneTarget(name), '#{mouse_any_flag}']).catch(() => '');
+    return { appMouse: out.trim() === '1' };
   }
 
   /** Paste text into the agent's input (bracketed paste, so newlines don't submit). Used for quote-replies. */

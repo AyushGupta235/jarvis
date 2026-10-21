@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { AgentKind, SessionStatus } from '@jarvis/protocol';
+import type { AgentKind, SessionMode, SessionStatus } from '@jarvis/protocol';
 
 export interface SessionRow {
   id: string;
@@ -16,6 +16,9 @@ export interface SessionRow {
   created_at: number;
   exited_at: number | null;
   sort_order: number;
+  mode: SessionMode;
+  /** Rich sessions: the permission mode they started with, so revive keeps it. Null means your Claude settings. */
+  permission_mode: string | null;
 }
 
 const SCHEMA = `
@@ -33,7 +36,9 @@ create table if not exists sessions (
   status text not null,
   created_at integer not null,
   exited_at integer,
-  sort_order integer not null default 0
+  sort_order integer not null default 0,
+  mode text not null default 'terminal',
+  permission_mode text
 );
 create table if not exists kv (
   key text primary key,
@@ -116,6 +121,8 @@ export class Db {
     if (sessions.has('claude_session_id') && !sessions.has('agent_session_id')) {
       this.db.exec('alter table sessions rename column claude_session_id to agent_session_id');
     }
+    if (!cols('sessions').has('mode')) this.db.exec("alter table sessions add column mode text not null default 'terminal'");
+    if (!cols('sessions').has('permission_mode')) this.db.exec('alter table sessions add column permission_mode text');
     if (!cols('tool_seen').has('sample')) this.db.exec('alter table tool_seen add column sample text');
     if (!cols('usage_msgs').has('session')) {
       // New per-message fields: rebuild the usage index from scratch (it takes seconds).
@@ -136,11 +143,11 @@ export class Db {
     this.db
       .prepare(
         `insert into sessions (id, tmux_name, name, agent, model, agent_session_id, cwd, repo_root, worktree,
-          hidden, status, created_at, exited_at, sort_order)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          hidden, status, created_at, exited_at, sort_order, mode, permission_mode)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(r.id, r.tmux_name, r.name, r.agent, r.model, r.agent_session_id, r.cwd, r.repo_root, r.worktree,
-        r.hidden, r.status, r.created_at, r.exited_at, r.sort_order);
+        r.hidden, r.status, r.created_at, r.exited_at, r.sort_order, r.mode, r.permission_mode);
   }
 
   updateSession(id: string, patch: Partial<SessionRow>): void {

@@ -30,10 +30,15 @@ export function buildHandlers(svc: JarvisService, shutdown: () => void): Record<
     'tmux.clearHistory': async (p) => { await svc.clearHistory(p.id); return { ok: true }; },
     'tmux.search': async (p) => { await svc.search(p.id); return { ok: true }; },
     'tmux.copyMode': async (p) => { await svc.copyMode(p.id); return { ok: true }; },
+    'tmux.mouseState': (p) => svc.mouseState(p.id),
     'repos.list': () => svc.repos(),
     'agents.list': (p) => svc.agentsList(!!p?.refresh),
     'sessions.paste': async (p) => { await svc.paste(p.id, p.text); return { ok: true }; },
     'tmux.lastBuffer': (p) => svc.lastBuffer(p.id),
+    'rich.history': (p) => svc.richHistory(p.id),
+    'rich.send': (p) => { svc.richSend(p.id, String(p.text ?? '')); return { ok: true }; },
+    'rich.interrupt': (p) => { svc.richInterrupt(p.id); return { ok: true }; },
+    'rich.respond': (p) => { svc.richRespond(p.id, p.requestId, p.behavior === 'allow' ? 'allow' : 'deny', p.message); return { ok: true }; },
     'activity.list': (p) => svc.activity(p.id, p.limit),
     'files.list': (p) => svc.filesList(p.root),
     'files.read': (p) => svc.filesRead(p.path),
@@ -145,6 +150,7 @@ export async function serve(socketPath: string, svc: JarvisService, handlers: Re
   svc.on('activity', (e: ActivityEntry) => broadcast({ event: 'activity', data: e }));
   svc.on('files.changed', (d: { root: string; paths: string[] }) => broadcast({ event: 'files.changed', data: d }));
   svc.on('attention', (d) => broadcast({ event: 'attention', data: d }));
+  svc.on('rich.event', (d) => broadcast({ event: 'rich.event', data: d }));
 
   await new Promise<void>((resolve, reject) => {
     http.once('error', reject);

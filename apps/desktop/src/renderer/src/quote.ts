@@ -7,6 +7,16 @@ import { flashError, focusTerminal, rpc } from './store';
  * just dragged in tmux) and paste it into the agent's prompt as a quote, ready for you to type below it.
  */
 export async function quoteSelection(s: SessionInfo, since = 0): Promise<boolean> {
+  if (s.mode === 'rich') {
+    // The rich view is a normal page: quote the page selection into its composer.
+    const text = window.getSelection()?.toString() ?? '';
+    if (!text.trim()) {
+      flashError("Select some of the agent's output first, then ⌘' to quote it.");
+      return false;
+    }
+    window.dispatchEvent(new CustomEvent('jarvis:quote', { detail: { id: s.id, text: toQuote(text) } }));
+    return true;
+  }
   const t = terminals.get(s.id);
   let text = t?.term.getSelection() ?? '';
   if (!text.trim()) {
@@ -17,9 +27,12 @@ export async function quoteSelection(s: SessionInfo, since = 0): Promise<boolean
     flashError("Select some of the agent's output first (drag over it), then ⌘' to quote it.");
     return false;
   }
-  const quoted = `${text.replace(/\s+$/, '').split('\n').map((l) => `> ${l.trimEnd()}`).join('\n')}\n\n`;
-  await rpc('sessions.paste', { id: s.id, text: quoted });
+  await rpc('sessions.paste', { id: s.id, text: toQuote(text) });
   t?.term.clearSelection();
   focusTerminal();
   return true;
+}
+
+function toQuote(text: string): string {
+  return `${text.replace(/\s+$/, '').split('\n').map((l) => `> ${l.trimEnd()}`).join('\n')}\n\n`;
 }

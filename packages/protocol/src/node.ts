@@ -24,3 +24,35 @@ export function daemonSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   const h = createHash('sha1').update(home).digest('hex').slice(0, 10);
   return join('/tmp', `jarvisd-${userInfo().uid}-${h}.sock`);
 }
+
+/** Where a rich session's host listens. Same 104-byte rule as the daemon socket. */
+export function richSocketPath(id: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = jarvisHome(env);
+  const p = join(home, 'rich', `${id}.sock`);
+  if (Buffer.byteLength(p) <= MAX_SOCKET_PATH) return p;
+  const h = createHash('sha1').update(home).digest('hex').slice(0, 10);
+  return join('/tmp', `jarvis-rich-${userInfo().uid}-${h}-${id}.sock`);
+}
+
+/** Everything a rich session host needs, passed in JARVIS_HOST_CONFIG. */
+export interface RichHostConfig {
+  id: string;
+  socketPath: string;
+  /** JSON file the host writes with its pid while it runs, so jarvisd can find it again after a restart. */
+  metaPath: string;
+  cwd: string;
+  agentSessionId: string;
+  resume: boolean;
+  model: string | null;
+  permissionMode: string | null;
+  claudePath: string | null;
+  /** Jarvis's hook settings file, so the cockpit's observers see rich sessions like terminal ones. */
+  settingsPath: string | null;
+}
+
+export interface RichHostMeta {
+  pid: number;
+  socketPath: string;
+  agentSessionId: string;
+  startedAt: number;
+}

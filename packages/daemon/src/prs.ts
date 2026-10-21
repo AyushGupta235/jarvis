@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import type { PrState, PullRequest } from '@jarvis/protocol';
+import { MERGED_WINDOW_DAYS, type PrState, type PullRequest } from '@jarvis/protocol';
 import { logError } from './log';
 
 function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<string> {
@@ -13,7 +13,7 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<strin
 }
 
 const FRAGMENT = `fragment pr on PullRequest {
-  number title url isDraft headRefName baseRefName updatedAt additions deletions reviewDecision mergeable
+  number title url isDraft state mergedAt headRefName baseRefName updatedAt additions deletions reviewDecision mergeable
   repository { nameWithOwner }
   comments { totalCount }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
@@ -24,6 +24,17 @@ const QUERY = `query {
   review: search(query: "is:pr is:open archived:false review-requested:@me", type: ISSUE, first: 30) { nodes { ... on PullRequest { ...pr } } }
 }
 ${FRAGMENT}`;
+
+/** Your merged PRs. A separate, lighter request (no CI rollup): folded into QUERY, GitHub answers with 502s. */
+function mergedQuery(): string {
+  const since = new Date(Date.now() - MERGED_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+  return `query {
+  merged: search(query: "is:pr is:merged author:@me merged:>=${since} sort:updated-desc", type: ISSUE, first: 100) { nodes { ... on PullRequest {
+    number title url isDraft state mergedAt headRefName baseRefName updatedAt additions deletions
+    repository { nameWithOwner } comments { totalCount }
+  } } }
+}`;
+}
 
 /** Parses `gh auth status` for every github.com account (you may be logged in to several). */
 export function parseAccounts(out: string): string[] {
@@ -39,10 +50,20 @@ function toPr(n: any, account: string, role: PullRequest['role']): PullRequest {
     checks: n.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? null,
     review: n.reviewDecision ?? null, mergeable: n.mergeable ?? null,
     additions: n.additions ?? 0, deletions: n.deletions ?? 0, comments: n.comments?.totalCount ?? 0,
+    state: n.state ?? 'OPEN', mergedAt: n.mergedAt ?? null,
   };
 }
 
-/** Open PRs you authored and PRs waiting on your review, across all gh accounts, refreshed every 2 minutes. */
+/** The PR for a branch: open ones first (yours before review requests), else the most recently merged. */
+export function pickBranchPr(prs: PullRequest[], repo: string | null, branch: string | null): PullRequest | null {
+  if (!repo || !branch) return null;
+  const hits = prs.filter((p) => p.repo.toLowerCase() === repo.toLowerCase() && p.headRef === branch);
+  const open = hits.filter((p) => p.state === 'OPEN');
+  if (open.length) return open.find((p) => p.role === 'author') ?? open[0]!;
+  return hits.filter((p) => p.state === 'MERGED').sort((a, b) => (b.mergedAt ?? '').localeCompare(a.mergedAt ?? ''))[0] ?? null;
+}
+
+/** Open PRs you authored, PRs waiting on your review, and your recently merged PRs, across all gh accounts, refreshed every 2 minutes. */
 export class PrTracker extends EventEmitter {
   state: PrState = { accounts: [], prs: [], updatedAt: null, error: null };
   /** Last good result per account, so one account's transient failure doesn't blank the list. */
@@ -83,19 +104,30 @@ export class PrTracker extends EventEmitter {
       await Promise.all(accounts.map(async (acct) => {
         try {
           const token = (await run(this.gh!, ['auth', 'token', '-h', 'github.com', '--user', acct], this.env)).trim();
-          let out: string;
-          try {
-            out = await run(this.gh!, ['api', 'graphql', '-f', `query=${QUERY}`], { ...this.env, GH_TOKEN: token });
-          } catch (e) {
-            // GitHub's GraphQL API returns sporadic 502s on heavier queries; one retry clears most of them.
-            if (!/HTTP 5\d\d|timeout|ETIMEDOUT|ECONNRESET/i.test((e as Error).message)) throw e;
-            await new Promise((r) => setTimeout(r, 1500));
-            out = await run(this.gh!, ['api', 'graphql', '-f', `query=${QUERY}`], { ...this.env, GH_TOKEN: token });
-          }
-          const j = JSON.parse(out).data;
+          const gql = async (q: string): Promise<any> => {
+            const env = { ...this.env, GH_TOKEN: token };
+            try {
+              return JSON.parse(await run(this.gh!, ['api', 'graphql', '-f', `query=${q}`], env)).data;
+            } catch (e) {
+              // GitHub's GraphQL API returns sporadic 502s on heavier queries; one retry clears most of them.
+              if (!/HTTP 5\d\d|timeout|ETIMEDOUT|ECONNRESET/i.test((e as Error).message)) throw e;
+              await new Promise((r) => setTimeout(r, 1500));
+              return JSON.parse(await run(this.gh!, ['api', 'graphql', '-f', `query=${q}`], env)).data;
+            }
+          };
+          const [open, merged] = await Promise.allSettled([gql(QUERY), gql(mergedQuery())]);
+          if (open.status === 'rejected') throw open.reason;
+          const j = open.value;
           const mine: PullRequest[] = [];
           for (const n of j?.viewer?.pullRequests?.nodes ?? []) mine.push(toPr(n, acct, 'author'));
           for (const n of j?.review?.nodes ?? []) if (n?.number) mine.push(toPr(n, acct, 'reviewer'));
+          if (merged.status === 'fulfilled') {
+            for (const n of merged.value?.merged?.nodes ?? []) if (n?.number) mine.push(toPr(n, acct, 'author'));
+          } else {
+            // Keep the merged PRs from the last good refresh rather than dropping them.
+            mine.push(...(this.byAccount.get(acct) ?? []).filter((p) => p.state === 'MERGED'));
+            errors.push(`${acct} (merged): ${(merged.reason as Error).message.slice(0, 200)}`);
+          }
           this.byAccount.set(acct, mine);
         } catch (e) {
           errors.push(`${acct}: ${(e as Error).message.slice(0, 200)}${this.byAccount.has(acct) ? ' (showing last good list)' : ''}`);
@@ -112,11 +144,8 @@ export class PrTracker extends EventEmitter {
     return this.state;
   }
 
-  /** The open PR for a branch of a GitHub repo, preferring ones you authored. */
   forBranch(repo: string | null, branch: string | null): PullRequest | null {
-    if (!repo || !branch) return null;
-    const hits = this.state.prs.filter((p) => p.repo.toLowerCase() === repo.toLowerCase() && p.headRef === branch);
-    return hits.find((p) => p.role === 'author') ?? hits[0] ?? null;
+    return pickBranchPr(this.state.prs, repo, branch);
   }
 }
 

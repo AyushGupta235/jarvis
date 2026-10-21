@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { Db } from '../src/db';
 import { Observers, toolSummary } from '../src/observers';
 import { CodexObserver } from '../src/codex';
-import { parseAccounts } from '../src/prs';
+import { parseAccounts, pickBranchPr } from '../src/prs';
+import type { PullRequest } from '@jarvis/protocol';
 import { projectOf } from '../src/usage';
 
 function setup() {
@@ -124,6 +125,17 @@ describe('misc parsers', () => {
   it('reads every gh account', () => {
     const out = '  ✓ Logged in to github.com account work-account (keyring)\n  ✓ Logged in to github.com account personal-account (keyring)';
     expect(parseAccounts(out)).toEqual(['work-account', 'personal-account']);
+  });
+  it('picks the open PR for a branch, else the latest merged one', () => {
+    const pr = (o: Partial<PullRequest>): PullRequest => ({
+      account: 'a', repo: 'o/r', number: 1, title: '', url: '', isDraft: false, headRef: 'feat', baseRef: 'main', updatedAt: '',
+      checks: null, review: null, mergeable: null, additions: 0, deletions: 0, comments: 0, role: 'author', state: 'OPEN', mergedAt: null, ...o,
+    });
+    const merged1 = pr({ number: 1, state: 'MERGED', mergedAt: '2026-10-01T00:00:00Z' });
+    const merged2 = pr({ number: 2, state: 'MERGED', mergedAt: '2026-10-05T00:00:00Z' });
+    expect(pickBranchPr([merged1, merged2], 'O/R', 'feat')?.number).toBe(2);
+    expect(pickBranchPr([merged2, pr({ number: 3, role: 'reviewer' }), pr({ number: 4 })], 'o/r', 'feat')?.number).toBe(4);
+    expect(pickBranchPr([merged2], 'o/r', 'other')).toBeNull();
   });
   it('rolls worktrees up to their repo', () => {
     expect(projectOf('/x/repo/.claude/worktrees/feat-1/src')).toBe('/x/repo');

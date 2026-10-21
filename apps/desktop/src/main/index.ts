@@ -111,6 +111,7 @@ daemon.on('snapshot', (s) => win?.webContents.send('snapshot', s));
 daemon.on('status', (s) => win?.webContents.send('daemon:status', s));
 daemon.on('activity', (e) => win?.webContents.send('activity', e));
 daemon.on('files.changed', (e) => win?.webContents.send('files.changed', e));
+daemon.on('rich.event', (e) => win?.webContents.send('rich.event', e));
 daemon.on('attention', (a: AttentionEvent) => {
   win?.webContents.send('attention', a);
   // Notify only when you can't already see it: another session is on screen, or Jarvis isn't focused.

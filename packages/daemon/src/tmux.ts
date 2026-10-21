@@ -137,6 +137,7 @@ set -s extended-keys on
 set -g focus-events on
 set -g allow-passthrough on
 set -g set-clipboard on
+set -g copy-command "pbcopy"
 set -as terminal-features ',xterm*:RGB:clipboard:hyperlinks:extkeys:focus:sync'
 set -g destroy-unattached off
 set -g exit-empty off

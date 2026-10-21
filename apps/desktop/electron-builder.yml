@@ -12,6 +12,9 @@ asarUnpack:
 extraResources:
   - from: ../../packages/daemon/dist/jarvisd.cjs
     to: jarvisd.cjs
+  # Rich session host (Agent SDK); jarvisd looks for it next to itself.
+  - from: ../../packages/daemon/dist/jarvis-agent-host.mjs
+    to: jarvis-agent-host.mjs
 npmRebuild: false
 mac:
   target: dir

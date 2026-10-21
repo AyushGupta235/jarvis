@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { homedir, userInfo } from 'node:os';
@@ -52,4 +53,35 @@ export function findBinary(name: string, env: NodeJS.ProcessEnv): string | null 
     if (existsSync(p)) return p;
   }
   return null;
+}
+
+let loginEnvCache: Promise<NodeJS.ProcessEnv> | null = null;
+
+/**
+ * Your interactive login shell's environment (PATH from .zshrc, nvm, pyenv...), cleaned like cleanEnv.
+ * Terminal sessions get this for free by starting agents through `zsh -l -i -c`; rich session hosts
+ * are spawned directly, so they ask once and reuse it. Falls back to the daemon's own env.
+ */
+export function loginEnv(base: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
+  loginEnvCache ??= new Promise((resolve) => {
+    const marker = '__JARVIS_ENV__';
+    execFile(userShell(), ['-l', '-i', '-c', `printf '\\0${marker}\\0'; env -0`], { env: base, timeout: 15_000, maxBuffer: 4 << 20 },
+      (err, stdout) => {
+        const out = String(stdout ?? '');
+        const at = out.indexOf(`\0${marker}\0`);
+        if (at < 0) {
+          resolve(cleanEnv(base));
+          return;
+        }
+        const env: NodeJS.ProcessEnv = {};
+        for (const kv of out.slice(at + marker.length + 2).split('\0')) {
+          const i = kv.indexOf('=');
+          if (i > 0) env[kv.slice(0, i)] = kv.slice(i + 1);
+        }
+        for (const [k, v] of Object.entries(base)) if (k.startsWith('JARVIS_') && v !== undefined) env[k] = v;
+        resolve(cleanEnv(env));
+        void err;
+      });
+  });
+  return loginEnvCache;
 }

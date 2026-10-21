@@ -1,5 +1,5 @@
 /** IPC contract between the Electron main process and the renderer. */
-import type { ActivityEntry, AgentPhase, Snapshot } from '@jarvis/protocol';
+import type { ActivityEntry, AgentPhase, RichEnvelope, Snapshot } from '@jarvis/protocol';
 
 export type MenuAction =
   | 'new-session' | 'new-session-here' | 'hide-session' | 'end-session' | 'rename-session'
@@ -32,6 +32,7 @@ export interface JarvisApi {
   onActivity(cb: (e: ActivityEntry) => void): () => void;
   onFilesChanged(cb: (d: { root: string; paths: string[] }) => void): () => void;
   onAttention(cb: (a: AttentionEvent) => void): () => void;
+  onRichEvent(cb: (e: { sessionId: string; envelope: RichEnvelope }) => void): () => void;
   /** Tell main which session is on screen and how many need you (dock badge). */
   setUiState(activeId: string | null, badge: number): void;
   rpc<T = unknown>(method: string, params?: unknown): Promise<T>;

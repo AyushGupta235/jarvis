@@ -191,7 +191,7 @@ async function daemonCmd(sub: string | undefined): Promise<void> {
 const HELP = `jarvis - client for jarvisd
 
   jarvis ls [--all] [--json]          list sessions grouped by repo
-  jarvis new [dir] [--agent ID] [--model M] [--name N] [--attach]
+  jarvis new [dir] [--agent ID] [--model M] [--name N] [--rich] [--attach]
   jarvis agents                       agents Jarvis can launch (built-in + ~/.jarvis/agents.json)
   jarvis attach <session>             attach in this terminal (tmux)
   jarvis send <session> <text...> [--no-enter]
@@ -234,8 +234,9 @@ async function main(): Promise<void> {
         agent: typeof flags.agent === 'string' ? flags.agent : 'claude',
         model: typeof flags.model === 'string' ? flags.model : null,
         name: typeof flags.name === 'string' ? flags.name : null,
+        mode: flags.rich ? 'rich' : 'terminal',
       });
-      console.log(`${s.id}  ${s.name}  (${s.tmuxName})`);
+      console.log(`${s.id}  ${s.name}  (${s.mode === 'rich' ? 'rich view' : s.tmuxName})`);
       if (flags.attach) return attach(s.id);
       return;
     }
@@ -243,6 +244,7 @@ async function main(): Promise<void> {
       return attach((await findSession(need(pos[0], 'session'))).id);
     case 'send': {
       const s = await findSession(need(pos[0], 'session'));
+      if (s.mode === 'rich') return void (await rpc('rich.send', { id: s.id, text: pos.slice(1).join(' ') }));
       await rpc('sessions.sendKeys', { id: s.id, text: pos.slice(1).join(' '), enter: !flags['no-enter'] });
       return;
     }

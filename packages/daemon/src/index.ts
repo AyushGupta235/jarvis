@@ -3,7 +3,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION, type DaemonInfo } from '@jarvis/protocol';
 import { daemonSocketPath, jarvisHome, tmuxSocketName } from '@jarvis/protocol/node';
-import { cleanEnv, findBinary, userShell } from './env';
+import { cleanEnv, findBinary, loginEnv, userShell } from './env';
+import { RichSessions } from './rich';
 import { Db } from './db';
 import { Tmux, writeTmuxConfs } from './tmux';
 import { JarvisService } from './service';
@@ -52,8 +53,14 @@ async function main(): Promise<void> {
   const usage = new UsageIndexer(db.raw, home);
   const prs = new PrTracker(process.env.JARVIS_NO_PRS ? null : findBinary('gh', env), env);
   const files = new FileWatcher();
+  // The host bundle sits next to jarvisd.cjs (dist/ in the repo, Resources/ in the app bundle).
+  const rich = new RichSessions(home, join(__dirname, 'jarvis-agent-host.mjs'), () => loginEnv(env), {
+    claudePath: () => agents.list().find((a) => a.id === 'claude')?.path ?? findBinary('claude', env),
+    settingsPath: integration.claudeSettings,
+    daemonSocket: socketPath,
+  });
   const svc = new JarvisService({
-    db, tmux, externalTmux, info, repoRoots, agents, observers, codex, usage, prs, remotes: new RemoteCache(), files,
+    db, tmux, externalTmux, info, repoRoots, agents, observers, codex, usage, prs, remotes: new RemoteCache(), files, rich,
     claudeSettings: integration.claudeSettings, socketPath, env,
   });
 
@@ -64,6 +71,7 @@ async function main(): Promise<void> {
     codex.stop();
     prs.stop();
     files.close();
+    rich.detachAll(); // hosts keep running, like tmux sessions
     await server?.close();
     db.close();
     process.exit(0);

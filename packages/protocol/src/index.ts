@@ -43,9 +43,15 @@ export interface AgentDef {
 /** running: tmux session exists. exited: registry knows it, tmux does not (process ended, reboot). */
 export type SessionStatus = 'running' | 'exited';
 
+/** terminal: the agent's own TUI in tmux. rich: driven through the agent's SDK and drawn by Jarvis (RICH-VIEW.md). */
+export type SessionMode = 'terminal' | 'rich';
+
 export interface SessionInfo {
   /** Stable short id. External sessions use `ext:<tmux name>`. */
   id: string;
+  mode: SessionMode;
+  /** Rich sessions: the host process and whether jarvisd is connected to it. */
+  rich: { hostPid: number | null; connected: boolean } | null;
   tmuxName: string;
   name: string;
   agent: AgentKind;
@@ -172,14 +178,19 @@ export interface PullRequest {
   comments: number;
   /** authored by you, or waiting on your review */
   role: 'author' | 'reviewer';
+  state: 'OPEN' | 'MERGED' | 'CLOSED';
+  mergedAt: string | null;
 }
 
 export interface PrState {
   accounts: string[];
+  /** Open PRs, then your PRs merged in the last MERGED_WINDOW_DAYS. */
   prs: PullRequest[];
   updatedAt: number | null;
   error: string | null;
 }
+
+export const MERGED_WINDOW_DAYS = 30;
 
 export interface Connector {
   agent: 'claude' | 'codex';
@@ -292,6 +303,40 @@ export interface CreateSessionParams {
   name?: string | null;
   /** Extra args appended to the agent command line. */
   extraArgs?: string[];
+  /** Default terminal. Rich needs an agent with an SDK adapter (Claude). */
+  mode?: SessionMode;
+  /** Rich sessions: starting permission mode (default: your Claude settings). */
+  permissionMode?: RichPermissionMode | null;
+}
+
+export type RichPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
+
+/**
+ * What a rich session shows, normalized across agent SDKs. The renderer only knows these.
+ * R0 covers text, tools and permissions; streaming deltas, questions and plans come in R1-R2.
+ */
+export type RichEvent =
+  | { kind: 'user'; text: string }
+  | { kind: 'text'; text: string; parentToolUseId: string | null }
+  | { kind: 'thinking'; text: string; parentToolUseId: string | null }
+  | { kind: 'tool_start'; toolUseId: string; tool: string; input: unknown; parentToolUseId: string | null }
+  | { kind: 'tool_end'; toolUseId: string; output: string; isError: boolean }
+  | { kind: 'permission_request'; requestId: string; tool: string; input: unknown; reason: string | null }
+  | { kind: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny' }
+  | { kind: 'status'; model: string | null; permissionMode: string | null; agentSessionId: string | null; cwd: string | null; authSource: string | null }
+  | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null }
+  | { kind: 'compact' }
+  | { kind: 'resumed'; messages: number }
+  | { kind: 'error'; message: string }
+  | { kind: 'ended'; reason: string };
+
+export interface RichEnvelope {
+  /** Increases by one per event within a host's lifetime. */
+  seq: number;
+  ts: number;
+  /** Rebuilt from the transcript when the host resumed, not seen live. */
+  replay?: boolean;
+  event: RichEvent;
 }
 
 export type PaneDirection = 'left' | 'right' | 'up' | 'down';
@@ -317,10 +362,16 @@ export interface RpcMethods {
   'tmux.clearHistory': [{ id: string }, { ok: true }];
   'tmux.search': [{ id: string }, { ok: true }];
   'tmux.copyMode': [{ id: string }, { ok: true }];
+  /** Whether the program in the active pane asked for mouse events (Claude Code's fullscreen TUI does, a shell doesn't). */
+  'tmux.mouseState': [{ id: string }, { appMouse: boolean }];
   'repos.list': [void, RepoCandidate[]];
   'agents.list': [{ refresh?: boolean } | void, AgentDef[]];
   'sessions.paste': [{ id: string; text: string }, { ok: true }];
   'tmux.lastBuffer': [{ id: string }, { name: string | null; created: number | null; text: string | null }];
+  'rich.history': [{ id: string }, { events: RichEnvelope[]; connected: boolean }];
+  'rich.send': [{ id: string; text: string }, { ok: true }];
+  'rich.interrupt': [{ id: string }, { ok: true }];
+  'rich.respond': [{ id: string; requestId: string; behavior: 'allow' | 'deny'; message?: string }, { ok: true }];
   'activity.list': [{ id: string; limit?: number }, ActivityEntry[]];
   'files.list': [{ root: string }, { root: string; files: FileEntry[]; truncated: boolean }];
   'files.read': [{ path: string }, FileContent];
@@ -358,7 +409,8 @@ export type ServerEvent =
   | { event: 'snapshot'; data: Snapshot }
   | { event: 'activity'; data: ActivityEntry }
   | { event: 'files.changed'; data: { root: string; paths: string[] } }
-  | { event: 'attention'; data: { sessionId: string; phase: AgentPhase; message: string | null } };
+  | { event: 'attention'; data: { sessionId: string; phase: AgentPhase; message: string | null } }
+  | { event: 'rich.event'; data: { sessionId: string; envelope: RichEnvelope } };
 
 /** A session counts as "working" if tmux saw activity this recently. Replaced by hook state in P1. */
 export const ACTIVE_WINDOW_MS = 2500;

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ActivityEntry, AgentDef, AgentKind, SessionInfo, Snapshot, WorkspaceInfo } from '@jarvis/protocol';
+import type { ActivityEntry, AgentDef, AgentKind, SessionInfo, SessionMode, Snapshot, WorkspaceInfo } from '@jarvis/protocol';
 import { ACTIVE_WINDOW_MS } from '@jarvis/protocol';
 import type { DaemonStatus } from '../../shared/ipc';
 import { DEFAULT_FONT_SIZE } from './theme';
@@ -33,6 +33,8 @@ export interface State {
   collapsed: Record<string, boolean>;
   lastAgent: AgentKind;
   lastModel: string | null;
+  /** Terminal or rich, for agents that have both. */
+  lastMode: SessionMode;
   error: string | null;
   navOpen: boolean;
   navTab: NavTab;
@@ -47,7 +49,7 @@ export interface State {
 }
 
 const PREFS_KEY = 'jarvis.prefs.v1';
-type Prefs = Pick<State, 'activeId' | 'showHidden' | 'sidebar' | 'fontSize' | 'collapsed' | 'lastAgent' | 'lastModel'
+type Prefs = Pick<State, 'activeId' | 'showHidden' | 'sidebar' | 'fontSize' | 'collapsed' | 'lastAgent' | 'lastModel' | 'lastMode'
   | 'navOpen' | 'navTab' | 'navWidth' | 'viewerOpen' | 'viewerTabs' | 'viewerActive' | 'viewerWidth'>;
 
 function loadPrefs(): Partial<Prefs> {
@@ -69,6 +71,7 @@ let state: State = {
   collapsed: {},
   lastAgent: 'claude',
   lastModel: null,
+  lastMode: 'terminal',
   error: null,
   navOpen: true,
   navTab: 'activity',
@@ -94,7 +97,7 @@ export function setState(patch: Partial<State> | ((s: State) => Partial<State>))
   try {
     const prefs: Prefs = {
       activeId: state.activeId, showHidden: state.showHidden, sidebar: state.sidebar, fontSize: state.fontSize,
-      collapsed: state.collapsed, lastAgent: state.lastAgent, lastModel: state.lastModel,
+      collapsed: state.collapsed, lastAgent: state.lastAgent, lastModel: state.lastModel, lastMode: state.lastMode,
       navOpen: state.navOpen, navTab: state.navTab, navWidth: state.navWidth, viewerOpen: state.viewerOpen,
       viewerTabs: state.viewerTabs.slice(0, 20), viewerActive: state.viewerActive, viewerWidth: state.viewerWidth,
     };

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentDef, AgentKind, RepoCandidate, SessionInfo } from '@jarvis/protocol';
+import type { AgentDef, AgentKind, RepoCandidate, SessionInfo, SessionMode } from '@jarvis/protocol';
 import { fuzzyFilter } from './fuzzy';
 import { activeSession, activity, ago, focusTerminal, getState, openInViewer, rpc, sessionRoot, setState, tildify, useStore } from './store';
 import { repoFiles, statusClass } from './nav/common';
@@ -72,6 +72,8 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
   const [query, setQuery] = useState('');
   const [agent, setAgentRaw] = useState<AgentKind>(lastAgent);
   const [model, setModel] = useState<string | null>(lastModel);
+  const lastMode = useStore((s) => s.lastMode);
+  const [mode, setMode] = useState<SessionMode>(lastMode);
   const def: AgentDef | undefined = agents?.find((a) => a.id === agent);
   const setAgent = (id: AgentKind) => {
     setAgentRaw(id);
@@ -123,8 +125,11 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
     if (!target || busy) return;
     setBusy(true);
     try {
-      const s = await rpc<SessionInfo>('sessions.create', { cwd: target, agent, model: def?.modelArgs ? model : null, name: name || null });
-      setState({ lastAgent: agent, lastModel: model });
+      const richOk = def?.integration === 'claude';
+      const s = await rpc<SessionInfo>('sessions.create', {
+        cwd: target, agent, model: def?.modelArgs ? model : null, name: name || null, mode: richOk ? mode : 'terminal',
+      });
+      setState({ lastAgent: agent, lastModel: model, ...(richOk ? { lastMode: mode } : {}) });
       activate(s.id);
     } catch {
       setBusy(false);
@@ -174,6 +179,12 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
             onKeyDown={(e) => e.key === 'Enter' && void create()} />
         ) : null}
       </div>
+      {def?.integration === 'claude' && (
+        <div className="modal-row">
+          <Segmented label="View" options={[{ value: 'terminal', label: 'Terminal' }, { value: 'rich', label: 'Rich (SDK)' }]}
+            value={mode} onChange={(v) => setMode(v as SessionMode)} />
+        </div>
+      )}
       <div className="modal-row">
         <input className="modal-input small" placeholder="Name (optional)" value={name}
           onChange={(e) => setName(e.target.value)}

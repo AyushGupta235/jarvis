@@ -4,10 +4,11 @@
   "private": true,
   "description": "jarvisd: owns tmux sessions, the session registry and the socket API",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/jarvisd.cjs --external:bufferutil --external:utf-8-validate --log-level=warning",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/jarvisd.cjs --external:bufferutil --external:utf-8-validate --log-level=warning && esbuild src/agent-host.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/jarvis-agent-host.mjs --banner:js=\"import { createRequire as __jarvisRequire } from 'node:module'; const require = __jarvisRequire(import.meta.url);\" --log-level=warning",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.306",
     "ws": "^8.22.0"
   },
   "devDependencies": {

@@ -14,7 +14,8 @@
     "package": "pnpm build && pnpm --filter @jarvis/desktop package",
     "typecheck": "pnpm -r run typecheck",
     "test": "vitest run",
-    "e2e": "pnpm build && node e2e/relaunch.e2e.mjs"
+    "e2e": "pnpm build && node e2e/relaunch.e2e.mjs",
+    "e2e:rich": "pnpm build && node e2e/rich.e2e.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

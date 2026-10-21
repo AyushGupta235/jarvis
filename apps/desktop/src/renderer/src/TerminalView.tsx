@@ -7,7 +7,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import type { SessionInfo } from '@jarvis/protocol';
 import { FONT_FAMILY, xtermTheme } from './theme';
 import { subscribePty } from './ptyBus';
-import { openInViewer, sessionRoot, useStore } from './store';
+import { openInViewer, rpc, sessionRoot, useStore } from './store';
 import { quoteSelection } from './quote';
 
 // Paths worth linking: anything with a slash and an extension, or a bare file name with a common extension.
@@ -172,13 +172,85 @@ export function TerminalView({ session, visible }: Props) {
     };
     void attach();
 
+    // OSC 52: programs (tmux's set-clipboard, Claude Code, vim over ssh) set the clipboard with this escape.
+    // xterm.js drops it unless handled. Clipboard reads ("?") are never answered.
+    term.parser.registerOscHandler(52, (data) => {
+      const b64 = data.slice(data.indexOf(';') + 1);
+      if (!b64 || b64 === '?') return true;
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const text = new TextDecoder().decode(bytes);
+        if (text) window.jarvis.copyText(text);
+      } catch { /* not base64 */ }
+      return true;
+    });
+
+    // Mouse selection. tmux has mouse mode on, so by default every click and drag goes to tmux, which
+    // copies on release and drops the highlight. When the program in the pane doesn't want the mouse
+    // (a shell, unlike Claude Code's fullscreen TUI), select in xterm instead: the highlight stays,
+    // ⌘C copies it, and it is also copied on release. ⌥-drag forces this anywhere.
+    let appMouse = sessionRef.current.agent !== 'shell';
+    let mouseCheckedAt = 0;
+    const refreshMouse = (force = false) => {
+      if (!force && Date.now() - mouseCheckedAt < 700) return;
+      mouseCheckedAt = Date.now();
+      rpc<{ appMouse: boolean }>('tmux.mouseState', { id: sessionRef.current.id })
+        .then((r) => { appMouse = r.appMouse; })
+        .catch(() => {});
+    };
+    const synthetic = new WeakSet<Event>();
+    const resend = (e: MouseEvent, altKey: boolean) => {
+      const copy = new MouseEvent('mousedown', {
+        bubbles: true, cancelable: true, composed: true, view: window, detail: e.detail,
+        clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY,
+        button: e.button, buttons: 1, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, altKey,
+      });
+      synthetic.add(copy);
+      e.target?.dispatchEvent(copy);
+    };
+    // A plain press is held until we know whether it's a click (goes to tmux: focus a split, place the
+    // cursor) or a drag (re-sent with ⌥, which xterm.js treats as "select, don't report").
+    let pending: MouseEvent | null = null;
+    const onSelectDown = (e: MouseEvent) => {
+      if (synthetic.has(e) || e.button !== 0 || e.altKey || e.metaKey || appMouse) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      if (e.detail >= 2) resend(e, true); // double-click word, triple-click line
+      else pending = e;
+    };
+    const onSelectMove = (e: MouseEvent) => {
+      if (pending && Math.hypot(e.clientX - pending.clientX, e.clientY - pending.clientY) > 3) {
+        const p = pending;
+        pending = null;
+        resend(p, true);
+      }
+    };
+    const onSelectUp = () => {
+      if (!pending) return;
+      const p = pending;
+      pending = null;
+      term.clearSelection();
+      resend(p, false);
+    };
+    const onHover = () => refreshMouse();
+    window.addEventListener('mousemove', onSelectMove, true);
+    window.addEventListener('mouseup', onSelectUp, true);
+    el.addEventListener('mousemove', onHover);
+    el.addEventListener('mouseenter', onHover);
+    refreshMouse(true);
+
     // Quote-reply: after a drag-select, offer to quote it into the agent's prompt.
     let down: { x: number; y: number; t: number } | null = null;
     const onDown = (e: MouseEvent) => {
+      if (synthetic.has(e)) return;
       down = { x: e.clientX, y: e.clientY, t: Date.now() };
       setQuoteAt(null);
     };
     const onUp = (e: MouseEvent) => {
+      // Copy on release, as tmux does, for selections made in xterm (drag, double-click word, triple-click line).
+      setTimeout(() => {
+        if (term.hasSelection()) window.jarvis.copyText(term.getSelection());
+      }, 0);
       if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8) return;
       const r = el.getBoundingClientRect();
       const since = down.t;
@@ -186,6 +258,7 @@ export function TerminalView({ session, visible }: Props) {
     };
     el.addEventListener('mousedown', onDown, true);
     el.addEventListener('mouseup', onUp, true);
+    el.addEventListener('mousedown', onSelectDown, true);
     const ro = new ResizeObserver(() => requestAnimationFrame(safeFit));
     ro.observe(el);
     const onFocus = () => {
@@ -197,6 +270,11 @@ export function TerminalView({ session, visible }: Props) {
       disposed = true;
       el.removeEventListener('mousedown', onDown, true);
       el.removeEventListener('mouseup', onUp, true);
+      el.removeEventListener('mousedown', onSelectDown, true);
+      window.removeEventListener('mousemove', onSelectMove, true);
+      window.removeEventListener('mouseup', onSelectUp, true);
+      el.removeEventListener('mousemove', onHover);
+      el.removeEventListener('mouseenter', onHover);
       ro.disconnect();
       window.removeEventListener('jarvis:focus-terminal', onFocus);
       unsub?.();
