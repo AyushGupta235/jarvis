@@ -9,16 +9,19 @@ export type Dialog =
   | { kind: 'new'; repoPath?: string }
   | { kind: 'switch' }
   | { kind: 'rename'; id: string }
-  | { kind: 'open-file' };
+  | { kind: 'open-file' }
+  | { kind: 'preview' };
 
-export type NavTab = 'activity' | 'files' | 'changes' | 'docs' | 'prs' | 'connectors' | 'usage';
+export type NavTab = 'activity' | 'thinking' | 'files' | 'changes' | 'docs' | 'prs' | 'connectors' | 'usage';
 
 export interface ViewerTab {
-  /** Absolute path. */
+  /** Absolute path, or the URL for a web preview. */
   path: string;
   /** Repo root it was opened from (for diffs and relative labels). */
   root: string | null;
-  mode: 'file' | 'diff';
+  mode: 'file' | 'diff' | 'web';
+  /** Web preview: a second URL shown side by side (compare). */
+  compare?: string | null;
   line?: number;
 }
 
@@ -28,6 +31,9 @@ export interface State {
   activeId: string | null;
   showHidden: boolean;
   sidebar: boolean;
+  /** Collapsed to a narrow rail of session icons. */
+  sidebarRail: boolean;
+  sidebarWidth: number;
   fontSize: number;
   dialog: Dialog;
   collapsed: Record<string, boolean>;
@@ -35,6 +41,12 @@ export interface State {
   lastModel: string | null;
   /** Terminal or rich, for agents that have both. */
   lastMode: SessionMode;
+  /** View → Theme / Interface Font / Terminal Font (ids from shared/themes.ts). */
+  themeId: string;
+  uiFontId: string;
+  monoFontId: string;
+  /** Bumped when the appearance changes, so highlighted code re-renders. */
+  appearanceVersion: number;
   error: string | null;
   navOpen: boolean;
   navTab: NavTab;
@@ -49,7 +61,7 @@ export interface State {
 }
 
 const PREFS_KEY = 'jarvis.prefs.v1';
-type Prefs = Pick<State, 'activeId' | 'showHidden' | 'sidebar' | 'fontSize' | 'collapsed' | 'lastAgent' | 'lastModel' | 'lastMode'
+type Prefs = Pick<State, 'activeId' | 'showHidden' | 'sidebar' | 'sidebarRail' | 'sidebarWidth' | 'fontSize' | 'collapsed' | 'lastAgent' | 'lastModel' | 'lastMode' | 'themeId' | 'uiFontId' | 'monoFontId'
   | 'navOpen' | 'navTab' | 'navWidth' | 'viewerOpen' | 'viewerTabs' | 'viewerActive' | 'viewerWidth'>;
 
 function loadPrefs(): Partial<Prefs> {
@@ -66,12 +78,18 @@ let state: State = {
   activeId: null,
   showHidden: false,
   sidebar: true,
+  sidebarRail: false,
+  sidebarWidth: 264,
   fontSize: DEFAULT_FONT_SIZE,
   dialog: null,
   collapsed: {},
   lastAgent: 'claude',
   lastModel: null,
   lastMode: 'terminal',
+  themeId: 'rose-pine-moon',
+  uiFontId: 'system',
+  monoFontId: 'jetbrains-nerd',
+  appearanceVersion: 0,
   error: null,
   navOpen: true,
   navTab: 'activity',
@@ -96,8 +114,10 @@ export function setState(patch: Partial<State> | ((s: State) => Partial<State>))
   state = { ...state, ...p };
   try {
     const prefs: Prefs = {
-      activeId: state.activeId, showHidden: state.showHidden, sidebar: state.sidebar, fontSize: state.fontSize,
+      activeId: state.activeId, showHidden: state.showHidden, sidebar: state.sidebar, sidebarRail: state.sidebarRail,
+      sidebarWidth: state.sidebarWidth, fontSize: state.fontSize,
       collapsed: state.collapsed, lastAgent: state.lastAgent, lastModel: state.lastModel, lastMode: state.lastMode,
+      themeId: state.themeId, uiFontId: state.uiFontId, monoFontId: state.monoFontId,
       navOpen: state.navOpen, navTab: state.navTab, navWidth: state.navWidth, viewerOpen: state.viewerOpen,
       viewerTabs: state.viewerTabs.slice(0, 20), viewerActive: state.viewerActive, viewerWidth: state.viewerWidth,
     };
@@ -169,6 +189,17 @@ export function openInViewer(tab: ViewerTab): void {
   } else {
     setState({ viewerOpen: true, viewerTabs: [...tabs, tab].slice(-12), viewerActive: Math.min(tabs.length, 11) });
   }
+}
+
+/** Open a URL in the viewer's web preview, widening the viewer so a page fits. */
+export function openPreview(url: string): void {
+  if (state.viewerWidth < 720) setState({ viewerWidth: 720 });
+  openInViewer({ path: url, root: null, mode: 'web' });
+}
+
+/** localhost and LAN dev URLs go to the preview pane; everything else opens in the browser. */
+export function isLocalUrl(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[\w-]+\.localhost|[\w-]+\.test)(:\d+)?(\/|$)/i.test(url);
 }
 
 export function closeViewerTab(i: number): void {
@@ -297,3 +328,6 @@ export function tildify(p: string | null | undefined): string {
 export function focusTerminal(): void {
   window.dispatchEvent(new Event('jarvis:focus-terminal'));
 }
+
+// Read-only-ish hook for end-to-end tests (e2e/layout.e2e.mjs sets pane widths through it).
+(window as unknown as { __jarvisSetState: typeof setState }).__jarvisSetState = setState;

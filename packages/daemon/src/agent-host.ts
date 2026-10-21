@@ -6,14 +6,15 @@
  * own transcript (~/.claude/projects), so after a reboot a new host resumes it by session id.
  *
  * Protocol: newline-delimited JSON. Client ops: sub {since}, send {text}, interrupt, respond
- * {requestId, behavior, message?}, close. Host ops: hello {pid, agentSessionId, seq}, events {list}, ev {env}, bye {reason}.
+ * {requestId, behavior, message?}, close, and requests with a reqId (info, conversations, set_mode) that get
+ * a reply {reqId, result | error}. Host ops: hello {pid, agentSessionId, seq}, events {list}, ev {env}, bye {reason}.
  */
-import { getSessionMessages, query, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { getSessionMessages, listSessions, query, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { dirname } from 'node:path';
-import type { RichEnvelope, RichEvent } from '@jarvis/protocol';
+import type { RichConversation, RichEnvelope, RichEvent, RichInfo } from '@jarvis/protocol';
 import type { RichHostConfig, RichHostMeta } from '@jarvis/protocol/node';
 
 const cfg = JSON.parse(process.env.JARVIS_HOST_CONFIG ?? 'null') as RichHostConfig | null;
@@ -78,10 +79,18 @@ function onSdkMessage(m: SDKMessage): void {
     case 'system':
       if (m.subtype === 'init') {
         log(`init: claude ${m.claude_code_version}, model ${m.model}, auth ${m.apiKeySource}, ${m.tools.length} tools`);
-        push({
-          kind: 'status', model: m.model, permissionMode: m.permissionMode, agentSessionId: m.session_id, cwd: m.cwd,
-          authSource: m.apiKeySource,
-        });
+        info.model = m.model;
+        info.permissionMode = m.permissionMode;
+        info.version = m.claude_code_version;
+        info.terminalCommands = m.terminal_slash_commands ?? info.terminalCommands;
+        info.account = { ...(info.account ?? { email: null, organization: null, subscription: null }), authSource: m.apiKeySource };
+        if (m.session_id && m.session_id !== currentSessionId) {
+          // /clear starts a new conversation: follow it, so revive and /resume know which one is live.
+          log(`session id changed: ${currentSessionId} -> ${m.session_id}`);
+          currentSessionId = m.session_id;
+          writeMeta();
+        }
+        pushStatus();
       } else if (m.subtype === 'compact_boundary') push({ kind: 'compact' });
       return;
     case 'assistant':
@@ -133,6 +142,23 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
 }
 
 const inbox = new Inbox();
+
+/** What the CLI reported at startup, plus what changes as the session runs (model, mode, session id after /clear). */
+const info: RichInfo = {
+  commands: [], terminalCommands: [], models: [], outputStyles: [], account: null, version: null, model: null, permissionMode: null,
+};
+let currentSessionId = cfg.agentSessionId;
+
+function writeMeta(): void {
+  const meta: RichHostMeta = { pid: process.pid, socketPath: cfg!.socketPath, agentSessionId: currentSessionId, startedAt };
+  mkdirSync(dirname(cfg!.metaPath), { recursive: true });
+  writeFileSync(cfg!.metaPath, JSON.stringify(meta));
+}
+const startedAt = Date.now();
+
+function pushStatus(): void {
+  push({ kind: 'status', model: info.model, permissionMode: info.permissionMode, agentSessionId: currentSessionId, cwd: cfg!.cwd, authSource: info.account?.authSource ?? null });
+}
 const pending = new Map<string, { input: Record<string, unknown>; resolve: (r: PermissionResult) => void }>();
 
 function resolvePermission(requestId: string, behavior: 'allow' | 'deny', message?: string): void {
@@ -201,8 +227,39 @@ function handle(c: Socket, line: string): void {
     case 'close':
       void shutdown('closed from Jarvis');
       return;
+    case 'info':
+    case 'conversations':
+    case 'set_mode':
+      void request(msg.op, msg)
+        .then((result) => send(c, { op: 'reply', reqId: msg.reqId, result }))
+        .catch((e) => send(c, { op: 'reply', reqId: msg.reqId, error: (e as Error).message }));
+      return;
     default:
       return;
+  }
+}
+
+async function request(op: string, msg: any): Promise<unknown> {
+  switch (op) {
+    case 'info':
+      return info;
+    case 'conversations': {
+      const list = await listSessions({ dir: cfg!.cwd, limit: 60 });
+      return list.map((x): RichConversation => ({
+        agentSessionId: x.sessionId, title: x.customTitle || x.summary || x.firstPrompt || x.sessionId,
+        firstPrompt: x.firstPrompt ?? null, lastModified: x.lastModified, sizeBytes: x.fileSize ?? null,
+        branch: x.gitBranch ?? null, current: x.sessionId === currentSessionId,
+      }));
+    }
+    case 'set_mode': {
+      if (!q) throw new Error('the session has not started yet');
+      await q.setPermissionMode(msg.mode);
+      info.permissionMode = msg.mode;
+      pushStatus();
+      return { ok: true };
+    }
+    default:
+      throw new Error(`unknown request ${op}`);
   }
 }
 
@@ -236,9 +293,7 @@ async function main(): Promise<void> {
     push({ kind: 'resumed', messages: msgs.length });
   }
   await serve();
-  const meta: RichHostMeta = { pid: process.pid, socketPath: c.socketPath, agentSessionId: c.agentSessionId, startedAt: Date.now() };
-  mkdirSync(dirname(c.metaPath), { recursive: true });
-  writeFileSync(c.metaPath, JSON.stringify(meta));
+  writeMeta();
   log(`host ${process.pid} for ${c.id} on ${c.socketPath} (${c.resume ? 'resume' : 'new'} ${c.agentSessionId})`);
 
   q = query({
@@ -252,6 +307,9 @@ async function main(): Promise<void> {
       ...(c.settingsPath ? { settings: c.settingsPath } : {}),
       // Without the preset the SDK uses a minimal system prompt, not Claude Code's.
       systemPrompt: { type: 'preset', preset: 'claude_code' },
+      // Adaptive thinking as usual, but with its summary text kept, so thinking can be read in the rich view
+      // and the Thinking tab (the SDK's default omits it).
+      thinking: { type: 'adaptive', display: 'summarized' },
       env: { ...process.env },
       stderr: (d: string) => log('[claude]', d.trimEnd()),
       canUseTool: (tool, input, opts) => new Promise<PermissionResult>((resolve) => {
@@ -264,6 +322,20 @@ async function main(): Promise<void> {
       }),
     },
   });
+  // Commands, models and account are known as soon as the CLI starts, before the first prompt.
+  void q.initializationResult().then((r) => {
+    info.commands = r.commands.map((x) => ({ name: x.name, description: x.description, argumentHint: x.argumentHint ?? '' }));
+    info.models = r.models.map((x) => ({ value: x.value, displayName: x.displayName, description: x.description }));
+    // Present at runtime (2.1.306) but not in the SDK's declared type.
+    const extra = r as { available_output_styles?: string[]; current_permission_mode?: string };
+    info.outputStyles = extra.available_output_styles ?? [];
+    info.version = r.claude_code_version ?? info.version;
+    info.permissionMode = info.permissionMode ?? extra.current_permission_mode ?? null;
+    info.account = {
+      email: r.account?.email ?? null, organization: r.account?.organization ?? null,
+      subscription: r.account?.subscriptionType ?? null, authSource: info.account?.authSource ?? r.account?.apiKeySource ?? null,
+    };
+  }).catch((e) => log('initializationResult failed', e));
   try {
     for await (const m of q) onSdkMessage(m);
     await shutdown('the agent exited');

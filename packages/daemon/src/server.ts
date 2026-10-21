@@ -4,6 +4,7 @@ import { chmodSync, existsSync, unlinkSync } from 'node:fs';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ActivityEntry, RpcRequest, RpcResponse, ServerEvent, Snapshot } from '@jarvis/protocol';
 import type { JarvisService } from './service';
+import { listDevServers } from './previews';
 import type { Observers } from './observers';
 import { log, logError } from './log';
 
@@ -39,6 +40,14 @@ export function buildHandlers(svc: JarvisService, shutdown: () => void): Record<
     'rich.send': (p) => { svc.richSend(p.id, String(p.text ?? '')); return { ok: true }; },
     'rich.interrupt': (p) => { svc.richInterrupt(p.id); return { ok: true }; },
     'rich.respond': (p) => { svc.richRespond(p.id, p.requestId, p.behavior === 'allow' ? 'allow' : 'deny', p.message); return { ok: true }; },
+    'rich.info': (p) => svc.richInfo(p.id),
+    'rich.conversations': (p) => svc.richConversations(p.id),
+    'rich.resume': (p) => svc.richResume(p.id, String(p.agentSessionId ?? '')),
+    'rich.setPermissionMode': async (p) => { await svc.richSetPermissionMode(p.id, p.mode); return { ok: true }; },
+    'rich.export': (p) => svc.richExport(p.id),
+    'preview.servers': (p) => listDevServers(p?.root ?? null),
+    'thinking.list': (p) => svc.thinking(p.id),
+    'sessions.switchMode': (p) => svc.switchMode(p.id, p.mode === 'rich' ? 'rich' : 'terminal', p.command ?? null),
     'activity.list': (p) => svc.activity(p.id, p.limit),
     'files.list': (p) => svc.filesList(p.root),
     'files.read': (p) => svc.filesRead(p.path),

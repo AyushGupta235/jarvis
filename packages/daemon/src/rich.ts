@@ -12,6 +12,7 @@ interface Conn {
   pid: number;
   events: RichEnvelope[];
   seq: number;
+  pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
 }
 
 export interface RichStartOptions {
@@ -147,7 +148,7 @@ export class RichSessions extends EventEmitter {
       const sock = connect(socketPath);
       let buf = '';
       let ready = false;
-      const conn: Conn = { sock, pid: 0, events: [], seq: 0 };
+      const conn: Conn = { sock, pid: 0, events: [], seq: 0, pending: new Map() };
       sock.once('error', (e) => { if (!ready) reject(e); });
       sock.on('data', (d) => {
         buf += d.toString('utf8');
@@ -174,6 +175,13 @@ export class RichSessions extends EventEmitter {
               this.emit('changed', id);
               resolve();
             }
+          } else if (m.op === 'reply') {
+            const p = conn.pending.get(m.reqId);
+            if (p) {
+              conn.pending.delete(m.reqId);
+              if (m.error) p.reject(new Error(m.error));
+              else p.resolve(m.result);
+            }
           } else if (m.op === 'ev') {
             const env = m.env as RichEnvelope;
             if (env.seq <= conn.seq) continue;
@@ -185,6 +193,8 @@ export class RichSessions extends EventEmitter {
         }
       });
       sock.on('close', () => {
+        for (const p of conn.pending.values()) p.reject(new Error('the session host went away'));
+        conn.pending.clear();
         if (this.conns.get(id) === conn) {
           this.conns.delete(id);
           log(`rich ${id}: host ${conn.pid} disconnected`);
@@ -201,6 +211,26 @@ export class RichSessions extends EventEmitter {
     c.sock.write(`${JSON.stringify(msg)}\n`);
   }
 
+  private reqSeq = 0;
+
+  /** Ask the host something and wait for its reply. */
+  request<T>(id: string, op: string, params: Record<string, unknown> = {}, timeoutMs = 15_000): Promise<T> {
+    const c = this.conns.get(id);
+    if (!c) return Promise.reject(new Error('this rich session is not running; revive it first'));
+    const reqId = ++this.reqSeq;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        c.pending.delete(reqId);
+        reject(new Error(`the session host did not answer ${op}`));
+      }, timeoutMs);
+      c.pending.set(reqId, {
+        resolve: (v) => { clearTimeout(timer); resolve(v as T); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      c.sock.write(`${JSON.stringify({ ...params, op, reqId })}\n`);
+    });
+  }
+
   send(id: string, text: string): void {
     this.op(id, { op: 'send', text });
   }
@@ -215,6 +245,7 @@ export class RichSessions extends EventEmitter {
 
   /** Stop the host (the conversation stays in the transcript and can be revived). */
   async stop(id: string): Promise<void> {
+    const pid = this.conns.get(id)?.pid ?? this.meta(id)?.pid ?? null;
     if (this.conns.has(id)) {
       this.op(id, { op: 'close' });
       const end = Date.now() + 3000;
@@ -224,6 +255,9 @@ export class RichSessions extends EventEmitter {
     if (m && alive(m.pid)) {
       try { process.kill(m.pid, 'SIGTERM'); } catch { /* gone */ }
     }
+    // Wait for it to exit, so nothing else writes this conversation while it is still closing.
+    const end = Date.now() + 4000;
+    while (pid && alive(pid) && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
   }
 
   /** Disconnect without stopping hosts (jarvisd is shutting down; hosts keep running). */

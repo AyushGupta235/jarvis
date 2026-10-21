@@ -332,6 +332,81 @@ export type RichEvent =
   | { kind: 'error'; message: string }
   | { kind: 'ended'; reason: string };
 
+/** What a running rich session can do, for the / palette and the native pickers. */
+export interface RichInfo {
+  /** Commands that run when sent as the prompt (built-ins, custom commands, skills). */
+  commands: { name: string; description: string; argumentHint: string }[];
+  /** Commands that need Claude Code's own screen; Jarvis runs them by reopening the conversation in a terminal. */
+  terminalCommands: string[];
+  models: { value: string; displayName: string; description: string }[];
+  outputStyles: string[];
+  account: { email: string | null; organization: string | null; subscription: string | null; authSource: string | null } | null;
+  version: string | null;
+  model: string | null;
+  permissionMode: string | null;
+}
+
+/**
+ * Slash commands that Claude Code only offers on its own screen: sent through the SDK they answer "isn't
+ * available in this environment" (checked against Claude Code 2.1.306). Jarvis builds some of them itself
+ * (NATIVE_RICH_COMMANDS) and runs the rest by reopening the conversation in a terminal.
+ */
+export const SCREEN_ONLY_COMMANDS = [
+  'add-dir', 'bashes', 'color', 'copy', 'doctor', 'exit', 'export', 'fast', 'feedback', 'focus', 'help', 'hooks', 'ide',
+  'install-github-app', 'keybindings', 'login', 'logout', 'memory', 'permissions', 'plugin', 'privacy-settings',
+  'release-notes', 'reload-plugins', 'resume', 'rewind', 'sandbox', 'status', 'statusline', 'tasks', 'terminal-setup',
+  'theme', 'todos', 'upgrade', 'vim',
+];
+
+/** Commands the rich view handles itself, with what they do there. */
+export const NATIVE_RICH_COMMANDS: Record<string, string> = {
+  resume: 'Switch to another conversation from this directory',
+  permissions: 'Change the permission mode',
+  status: 'Model, account, version and connection details',
+  copy: "Copy Claude's last reply",
+  export: 'Save the conversation as markdown in ~/Downloads',
+  memory: 'Open the CLAUDE.md files this session reads',
+  help: 'List every command',
+  exit: 'Stop this session (it can be revived)',
+};
+
+/** One stretch of the agent's thinking, from its transcript, with the prompt it was answering. */
+export interface ThinkingEntry {
+  ts: number | null;
+  prompt: string | null;
+  text: string;
+  model: string | null;
+}
+
+export interface ThinkingList {
+  entries: ThinkingEntry[];
+  /** Thinking blocks with no text (the API omitted them; showThinkingSummaries keeps summaries). */
+  omitted: number;
+  transcript: string | null;
+}
+
+/** A local server the web preview can open. */
+export interface DevServer {
+  port: number;
+  url: string;
+  command: string;
+  pid: number;
+  cwd: string | null;
+  /** Its process runs inside the session's repo. */
+  inSession: boolean;
+}
+
+/** A past Claude conversation in the session's directory, for /resume. */
+export interface RichConversation {
+  agentSessionId: string;
+  title: string;
+  firstPrompt: string | null;
+  lastModified: number;
+  sizeBytes: number | null;
+  branch: string | null;
+  current: boolean;
+}
+
 export interface RichEnvelope {
   /** Increases by one per event within a host's lifetime. */
   seq: number;
@@ -374,6 +449,17 @@ export interface RpcMethods {
   'rich.send': [{ id: string; text: string }, { ok: true }];
   'rich.interrupt': [{ id: string }, { ok: true }];
   'rich.respond': [{ id: string; requestId: string; behavior: 'allow' | 'deny'; message?: string }, { ok: true }];
+  'rich.info': [{ id: string }, RichInfo];
+  'rich.conversations': [{ id: string }, RichConversation[]];
+  /** Switch the session to another conversation (restarts its host with that conversation resumed). */
+  'rich.resume': [{ id: string; agentSessionId: string }, SessionInfo];
+  'rich.setPermissionMode': [{ id: string; mode: RichPermissionMode }, { ok: true }];
+  /** Write the conversation as markdown to ~/Downloads (or JARVIS_EXPORT_DIR) and return the path. */
+  'rich.export': [{ id: string }, { path: string; markdown: string }];
+  /** Move a Claude session between Claude Code's own screen and the rich view, keeping the conversation. */
+  'sessions.switchMode': [{ id: string; mode: SessionMode; command?: string | null }, SessionInfo];
+  'preview.servers': [{ root?: string | null }, DevServer[]];
+  'thinking.list': [{ id: string }, ThinkingList];
   'activity.list': [{ id: string; limit?: number }, ActivityEntry[]];
   'files.list': [{ root: string }, { root: string; files: FileEntry[]; truncated: boolean }];
   'files.read': [{ path: string }, FileContent];

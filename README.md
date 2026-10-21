@@ -43,7 +43,8 @@ It quits Jarvis if it's open, swaps in the new build, restarts jarvisd and reope
 - **⇧⌘R** or a double-click renames. Right-click a row for move, stop, revive, copy attach command, and reveal in Finder.
 - **⌘D** / **⇧⌘D** split right / down (tmux panes), **⇧⌘ arrows** move focus, **⌘Z** zooms a pane.
 - **⌘F** searches scrollback (tmux copy mode), **⇧⌘X** enters copy mode, **⌘K** clears.
-- **⌘B** toggles the sidebar, **⌘= / ⌘- / ⌘0** change font size, **⌘↵** fills the screen, **⇧⌘↵** goes full screen.
+- **⌘B** collapses the sidebar to a rail of session icons (drag its edge to resize; dragging it narrow does the same). **⌘= / ⌘- / ⌘0** change font size, **⌘↵** fills the screen, **⇧⌘↵** goes full screen.
+- **View → Theme** has 20 colour themes: six Jarvis originals (Graphite, Night City, Sunset Drive, Phosphor, Matcha, Oxblood & Cream) plus classics like Rosé Pine, Catppuccin, Tokyo Night, Nord and GitHub. Each one colours the app, the terminal and code. **View → Interface Font** and **Terminal Font** pick fonts (Inter, Geist, JetBrains Mono, Geist Mono, Fira Code and IBM Plex Mono are bundled).
 - **⇧↵** inserts a newline in Claude Code, and **⌥← / ⌥→** jump words, matching WezTerm.
 - **Selecting and copying.**
   - In a shell, drag to select. The highlight stays until you click or type, **⌘C** copies it, and it is also copied as you let go. Double-click selects a word, triple-click a line.
@@ -66,17 +67,17 @@ The window has three parts: the session sidebar on the left, the terminal in the
 - **PRs (⌥⌘5).** Your open PRs, PRs waiting on your review, and your PRs merged in the last 30 days, across every `gh` account you're logged in to. Filter by open, mine, to review, ready, needs work (conflicts, failing checks, changes requested) or merged, or search by title, repo or branch. Each PR has one status label: ready to merge, checks failing, conflicts, changes requested, needs review, checks running, draft or merged. The merged view groups by day and totals your last 7 days. Refreshes every 2 minutes.
 - **Connectors (⌥⌘6).** MCP servers available to the agent (user, project, repo, plugin, and claude.ai connectors), ranked by how often they were really called in the last 30 days. **Check health** runs the agent's own `mcp list`.
 - **Pulse (⌥⌘7).** Plan limits with reset countdowns (Claude 5-hour and weekly; Codex windows), and the fun numbers: today's tokens and API-equivalent cost against your average, tool calls, lines written by agents, words of output, sessions and peak concurrency, cache hit rate and what it saved, your streak, a 30-day chart, the hour-of-day heatmap, model mix, top tools and top repos.
+- **Thinking (⌥⌘8).** The agent's thinking for the session, grouped under the prompt it was answering, with search. Jarvis asks Claude to keep thinking summaries for the sessions it starts (it adds `showThinkingSummaries` to its own settings layer, not yours), so new sessions have readable thinking; older turns may show as "without text".
+- **Web preview (⇧⌘B).** Open a dev server or any URL in the viewer pane, next to the session. It lists the servers listening on your Mac, with the ones started from this repo first. Device widths (1280, 1024, 768, 390), **Compare** for two pages side by side (say, local against staging), reload on save, devtools. ⌘-click a `localhost` link in the terminal or a reply to open it there.
 - **Quote-reply.** Drag over something the agent said and click **❝ Quote in reply** (or press **⌘'**). It lands in the prompt as a `>` quote, ready for you to type underneath.
 
 ### Rich view (early)
 
 Claude sessions can also run in a rich view: pick **Rich (SDK)** under View in ⌘T, or run `jarvis new --rich`. The session runs through the Agent SDK in a small host process, and Jarvis draws it instead of showing Claude Code's TUI. It is on your Claude plan, and it uses your CLAUDE.md, hooks, skills and MCP servers like the CLI does.
 
-For now (phase R0 of [RICH-VIEW.md](RICH-VIEW.md)) it is plain text:
-- Messages, plus one row per tool call. Click a row for its input and output.
-- Allow and Deny buttons for permission prompts.
-- A composer: ↵ sends, ⇧↵ adds a newline, esc interrupts.
-- ⌘' quotes the selected text into the composer.
+- **Replies render as readable markdown**: tables (numbers right-aligned), code blocks with a language label, copy button and highlighting in your theme, callouts, task lists, and file paths that open in the viewer. Hover a reply for **Copy markdown** and **Raw**, to take the exact markdown somewhere else.
+- **Every slash command works.** Type **/** for the list. Most run through Claude Code as usual (`/context`, `/compact`, `/clear`, skills, your own commands). Jarvis does the interactive ones itself: `/resume` lists the conversations in this folder, `/model`, `/effort` and `/permissions` open pickers, plus `/status`, `/copy`, `/export` (to ~/Downloads), `/memory` and `/exit`. Commands that need Claude Code's own screen (`/login`, `/theme`, `/rewind`, `/plugin`, `/doctor` and so on) reopen the same conversation in a terminal with the command typed; **rich view ↗** in the title bar brings it back.
+- One row per tool call (click for its input and output), Allow and Deny for permission prompts, thinking you can expand, and a composer: ↵ sends, ⇧↵ adds a newline, esc interrupts, ⌘' quotes the selection.
 
 Rich sessions persist the way terminal ones do. They survive quitting Jarvis and restarting jarvisd, and if their host dies, revive resumes the conversation. The conversation is a normal Claude transcript, so `claude --resume <id>` opens it in a terminal too.
 
@@ -179,7 +180,8 @@ pnpm dev
 | `pnpm typecheck` | Type-check all packages |
 | `pnpm test` | Unit tests (vitest) |
 | `pnpm e2e` | Acceptance test, below |
-| `pnpm e2e:rich` | Rich-view acceptance test (23 checks, a few Haiku calls). `--packaged` runs it against the built app |
+| `pnpm e2e:rich` | Rich view: persistence (23 checks) and slash commands plus markdown (18 checks). A few Haiku calls |
+| `pnpm e2e:ui` | Web preview, sidebar, side panel and thinking (9 checks, one Sonnet call), then every theme and font (5 checks) |
 | `pnpm package` | Build `apps/desktop/release/mac-arm64/Jarvis.app` |
 | `pnpm install:local` | Build, install to `~/Applications`, restart jarvisd and reopen the app |
 

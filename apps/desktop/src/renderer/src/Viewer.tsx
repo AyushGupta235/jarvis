@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FileContent } from '@jarvis/protocol';
 import { highlightLines, langFor } from './highlight';
+import { WebPreview } from './WebPreview';
 import { highlightCodeBlocks, renderMarkdown } from './markdown';
 import {
   activeSession, closeViewerTab, focusTerminal, getState, openInViewer, rpc, setState, tildify, useStore, type ViewerTab,
@@ -35,25 +36,45 @@ async function referenceInPrompt(path: string, range: [number, number] | null): 
   focusTerminal();
 }
 
+/** Web tabs keep their identity while you browse (their URL changes); file tabs are keyed by path. */
+function tabKey(t: ViewerTab, i: number): string {
+  return t.mode === 'web' ? `web:${i}` : `${t.mode}:${t.path}`;
+}
+
+function webLabel(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname === '/' ? '' : u.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
 export function Viewer() {
   const tabs = useStore((s) => s.viewerTabs);
   const active = useStore((s) => s.viewerActive);
   const tab = tabs[active];
+  const look = useStore((s) => s.appearanceVersion);
   return (
     <section className="viewer">
       <div className="viewer-tabs">
         {tabs.map((t, i) => (
-          <div key={`${t.mode}:${t.path}`} className={`vtab ${i === active ? 'on' : ''}`} title={t.path}
+          <div key={tabKey(t, i)} className={`vtab ${i === active ? 'on' : ''}`} title={t.path}
             onClick={() => setState({ viewerActive: i })}
             onAuxClick={(e) => e.button === 1 && closeViewerTab(i)}>
             {t.mode === 'diff' && <span className="vtab-mode">Δ</span>}
-            <span className="vtab-name">{t.path.split('/').pop()}</span>
+            {t.mode === 'web' && <span className="vtab-mode web">◎</span>}
+            <span className="vtab-name">{t.mode === 'web' ? webLabel(t.path) : t.path.split('/').pop()}</span>
             <button className="vtab-x" onClick={(e) => { e.stopPropagation(); closeViewerTab(i); }}>×</button>
           </div>
         ))}
         <button className="icon-btn vtab-hide" title="Hide viewer (⌘\\)" onClick={() => setState({ viewerOpen: false })}>⇥</button>
       </div>
-      {tab ? <ViewerBody key={`${tab.mode}:${tab.path}`} tab={tab} /> : <div className="viewer-empty">Open a file from the navigator or ⌘O.</div>}
+      {tab
+        ? tab.mode === 'web'
+          ? <WebPreview key={tabKey(tab, active)} tab={tab} index={active} />
+          : <ViewerBody key={`${tabKey(tab, active)}:${look}`} tab={tab} />
+        : <div className="viewer-empty">Open a file from the navigator or ⌘O, or a web page with ⇧⌘B.</div>}
     </section>
   );
 }

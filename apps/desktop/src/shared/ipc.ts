@@ -1,5 +1,6 @@
 /** IPC contract between the Electron main process and the renderer. */
 import type { ActivityEntry, AgentPhase, RichEnvelope, Snapshot } from '@jarvis/protocol';
+import type { AppearanceState } from './themes';
 
 export type MenuAction =
   | 'new-session' | 'new-session-here' | 'hide-session' | 'end-session' | 'rename-session'
@@ -8,6 +9,7 @@ export type MenuAction =
   | 'clear' | 'find' | 'font-bigger' | 'font-smaller' | 'font-reset' | 'toggle-sidebar' | 'toggle-hidden'
   | 'move-up' | 'move-down' | 'copy-mode'
   | 'toggle-navigator' | 'nav-tab' | 'quick-open' | 'toggle-viewer' | 'close-viewer-tab' | 'next-attention' | 'quote-reply'
+  | 'open-preview' | 'toggle-sidebar-rail' | 'set-theme' | 'set-ui-font' | 'set-mono-font'
   | 'goto-session-id';
 
 export interface ContextMenuItem {
@@ -32,6 +34,8 @@ export interface JarvisApi {
   onActivity(cb: (e: ActivityEntry) => void): () => void;
   onFilesChanged(cb: (d: { root: string; paths: string[] }) => void): () => void;
   onAttention(cb: (a: AttentionEvent) => void): () => void;
+  /** Tell main the current theme and fonts (View menu checkmarks, macOS light/dark chrome). */
+  setAppearance(a: AppearanceState): void;
   onRichEvent(cb: (e: { sessionId: string; envelope: RichEnvelope }) => void): () => void;
   /** Tell main which session is on screen and how many need you (dock badge). */
   setUiState(activeId: string | null, badge: number): void;

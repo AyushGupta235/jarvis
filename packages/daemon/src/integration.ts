@@ -65,6 +65,9 @@ printf '%s' "$input" | "${original}"
   const settings = {
     hooks,
     statusLine: { type: 'command', command: statusScript, ...(sl?.padding !== undefined ? { padding: sl.padding } : {}) },
+    // Keep thinking summaries in the transcript (otherwise most thinking is omitted), so the Thinking tab and
+    // the rich view have something to show. Layered on Jarvis sessions only; ~/.claude/settings.json is untouched.
+    showThinkingSummaries: true,
   };
   const claudeSettings = join(home, 'claude-settings.json');
   writeFileSync(claudeSettings, JSON.stringify(settings, null, 2));

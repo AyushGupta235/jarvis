@@ -1,11 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID, randomBytes } from 'node:crypto';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import type {
   ActivityEntry, AgentDef, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent,
-  FileEntry, RepoCandidate, RichEnvelope, SessionInfo, Snapshot, UsageSummary, WorkspaceInfo,
+  FileEntry, RepoCandidate, RichConversation, RichEnvelope, RichInfo, RichPermissionMode, SessionInfo, SessionMode, Snapshot,
+  UsageSummary, WorkspaceInfo,
 } from '@jarvis/protocol';
 import { execFile } from 'node:child_process';
 import { fill, type AgentRegistry } from './agents';
@@ -14,6 +15,7 @@ import type { CodexObserver } from './codex';
 import type { UsageIndexer } from './usage';
 import type { PrTracker, RemoteCache } from './prs';
 import type { RichSessions } from './rich';
+import { findTranscript, readThinking } from './thinking';
 import { FileWatcher, changes as fileChanges, diff as fileDiff, listFiles, readFile } from './files';
 import { listDocs } from './docs';
 import { checkConnectors, listConnectors } from './connectors';
@@ -141,6 +143,11 @@ export class JarvisService extends EventEmitter {
       this.emit('rich.event', { sessionId: id, envelope });
       // Hooks report most state for rich sessions too; permission requests only exist on the SDK side.
       const ev = envelope.event;
+      if (ev.kind === 'status' && ev.agentSessionId) {
+        // /clear starts a new conversation; revive and the terminal switch must reopen the live one.
+        const r = o.db.getSession(id);
+        if (r && r.agent_session_id !== ev.agentSessionId) o.db.updateSession(id, { agent_session_id: ev.agentSessionId });
+      }
       if (ev.kind === 'permission_request') o.observers.setPhase(id, 'needs_input', `Permission: ${ev.tool}`);
       else if (ev.kind === 'permission_resolved' && o.observers.state(id)?.phase === 'needs_input') o.observers.setPhase(id, 'working');
       else if (ev.kind === 'turn_end' && o.observers.state(id)?.phase !== 'done') o.observers.setPhase(id, 'done', ev.ok ? null : ev.error);
@@ -344,6 +351,117 @@ export class JarvisService extends EventEmitter {
 
   richRespond(id: string, requestId: string, behavior: 'allow' | 'deny', message?: string): void {
     this.o.rich.respond(id, requestId, behavior, message);
+  }
+
+  /** The thinking in this session's current Claude conversation, for the Thinking tab. */
+  thinking(id: string): Promise<import('@jarvis/protocol').ThinkingList> {
+    const r = this.row(id);
+    return readThinking(r.agent_session_id ? findTranscript(r.agent_session_id) : null);
+  }
+
+  richInfo(id: string): Promise<RichInfo> {
+    return this.o.rich.request<RichInfo>(id, 'info');
+  }
+
+  richConversations(id: string): Promise<RichConversation[]> {
+    return this.o.rich.request<RichConversation[]>(id, 'conversations');
+  }
+
+  async richSetPermissionMode(id: string, mode: RichPermissionMode): Promise<void> {
+    await this.o.rich.request(id, 'set_mode', { mode });
+    this.o.db.updateSession(id, { permission_mode: mode });
+  }
+
+  /** /resume: point this session at another conversation and restart its host on it. */
+  async richResume(id: string, agentSessionId: string): Promise<SessionInfo> {
+    const r = this.row(id);
+    if (r.mode !== 'rich') throw new Error('resume from the picker is for rich sessions; use /resume in the terminal');
+    if (!/^[0-9a-f-]{36}$/i.test(agentSessionId)) throw new Error('not a Claude session id');
+    await this.o.rich.stop(id);
+    this.o.db.updateSession(id, { agent_session_id: agentSessionId, status: 'running', exited_at: null });
+    this.o.observers.forget(id);
+    await this.startRich(this.row(id), true);
+    log(`rich ${id}: resumed conversation ${agentSessionId}`);
+    await this.poll();
+    return this.toInfo(this.row(id));
+  }
+
+  /** /export: the conversation as markdown in ~/Downloads (JARVIS_EXPORT_DIR in tests). */
+  richExport(id: string): { path: string; markdown: string } {
+    const r = this.row(id);
+    const lines: string[] = [`# ${r.name}`, '', `Exported from Jarvis on ${new Date().toLocaleString()}. Claude conversation \`${r.agent_session_id}\` in \`${r.cwd}\`.`, ''];
+    let speaker = '';
+    const say = (who: string) => {
+      if (speaker !== who) lines.push(`## ${who}`, '');
+      speaker = who;
+    };
+    for (const { event: e } of this.o.rich.history(id)) {
+      if (e.kind === 'user') { say('You'); lines.push(e.text, ''); }
+      else if (e.kind === 'text' && !e.parentToolUseId) { say('Claude'); lines.push(e.text, ''); }
+      else if (e.kind === 'tool_start' && !e.parentToolUseId) {
+        say('Claude');
+        const i = (e.input ?? {}) as Record<string, unknown>;
+        const arg = String(i.command ?? i.file_path ?? i.pattern ?? i.url ?? i.description ?? '').split('\n')[0]?.slice(0, 200) ?? '';
+        lines.push(`- \`${e.tool}\`${arg ? ` ${arg}` : ''}`, '');
+      }
+    }
+    const markdown = `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+    const dir = process.env.JARVIS_EXPORT_DIR || join(homedir(), 'Downloads');
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const path = join(dir, `${r.name.replace(/[^\w.-]+/g, '-').replace(/^-|-$/g, '') || 'conversation'}-${stamp}.md`);
+    writeFileSync(path, markdown);
+    return { path, markdown };
+  }
+
+  /**
+   * Move a Claude session between Claude Code's own screen and the rich view. The conversation is Claude's
+   * transcript, so each side resumes it by id; only one side runs at a time. With `command`, the terminal
+   * side types that slash command once Claude Code is ready (for commands that need its screen).
+   */
+  async switchMode(id: string, mode: SessionMode, command: string | null = null): Promise<SessionInfo> {
+    const r = this.row(id);
+    const def = this.o.agents.get(r.agent);
+    if (def.integration !== 'claude') throw new Error(`${def.label} has no rich view`);
+    if (r.mode !== mode) {
+      const resume = !!r.agent_session_id && claudeTranscriptExists(r.agent_session_id);
+      if (mode === 'terminal') {
+        await this.o.rich.stop(id);
+        this.o.db.updateSession(id, { mode: 'terminal', tmux_name: `j-${id}`, status: 'running', exited_at: null });
+        const extraArgs = r.permission_mode ? ['--permission-mode', r.permission_mode] : [];
+        await this.startTmux(this.row(id), { resume, extraArgs });
+      } else {
+        if (this.live.has(r.tmux_name)) {
+          await this.o.tmux.run(['kill-session', '-t', Tmux.target(r.tmux_name)]).catch(() => {});
+          await new Promise((res) => setTimeout(res, 600)); // let Claude Code finish writing its transcript
+        }
+        if (!r.agent_session_id) this.o.db.updateSession(id, { agent_session_id: randomUUID() });
+        this.o.db.updateSession(id, { mode: 'rich', tmux_name: `r-${id}`, status: 'running', exited_at: null });
+        await this.startRich(this.row(id), resume);
+      }
+      this.o.observers.forget(id);
+      log(`session ${id}: switched to ${mode} (resume=${resume})`);
+      await this.poll();
+    }
+    if (command && mode === 'terminal') void this.typeWhenReady(this.row(id).tmux_name, command);
+    return this.toInfo(this.row(id));
+  }
+
+  /** Wait for Claude Code's input box, then type a command into it. */
+  private async typeWhenReady(tmuxName: string, command: string): Promise<void> {
+    const end = Date.now() + 30_000;
+    while (Date.now() < end) {
+      const screen = await this.o.tmux.run(['capture-pane', '-p', '-t', Tmux.paneTarget(tmuxName)]).catch(() => '');
+      // The empty input line is the one sign that holds in every permission mode (the footer text varies).
+      if (/^\s*❯\s*$/m.test(screen) || /shift\+tab|\? for shortcuts/i.test(screen)) {
+        await this.o.tmux.run(['send-keys', '-t', Tmux.paneTarget(tmuxName), '-l', command]);
+        await new Promise((res) => setTimeout(res, 150));
+        await this.o.tmux.run(['send-keys', '-t', Tmux.paneTarget(tmuxName), 'Enter']);
+        return;
+      }
+      await new Promise((res) => setTimeout(res, 400));
+    }
+    logError(`could not type ${command} into ${tmuxName}: Claude Code did not become ready`);
   }
 
   private async startTmux(row: SessionRow, opts: { resume: boolean; extraArgs?: string[] }): Promise<void> {

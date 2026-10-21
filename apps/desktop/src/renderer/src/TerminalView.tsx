@@ -5,9 +5,9 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import type { SessionInfo } from '@jarvis/protocol';
-import { FONT_FAMILY, xtermTheme } from './theme';
+import { currentTheme, monoFamily, xtermThemeFor } from './appearance';
 import { subscribePty } from './ptyBus';
-import { openInViewer, rpc, sessionRoot, useStore } from './store';
+import { isLocalUrl, openInViewer, openPreview, rpc, sessionRoot, useStore } from './store';
 import { quoteSelection } from './quote';
 
 // Paths worth linking: anything with a slash and an extension, or a bare file name with a common extension.
@@ -42,10 +42,10 @@ export function TerminalView({ session, visible }: Props) {
   useEffect(() => {
     const el = host.current!;
     const term = new Terminal({
-      fontFamily: FONT_FAMILY,
+      fontFamily: monoFamily(),
       fontSize,
       lineHeight: 1.1,
-      theme: xtermTheme,
+      theme: xtermThemeFor(currentTheme()),
       cursorStyle: 'bar',
       cursorBlink: true,
       allowTransparency: true,
@@ -61,7 +61,10 @@ export function TerminalView({ session, visible }: Props) {
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = '11';
     term.loadAddon(new WebLinksAddon((e, uri) => {
-      if (e.metaKey) window.jarvis.openExternal(uri);
+      if (!e.metaKey) return;
+      // ⌘-click a localhost URL (a dev server) to open it in the preview pane beside the terminal.
+      if (isLocalUrl(uri)) openPreview(uri);
+      else window.jarvis.openExternal(uri);
     }));
     term.open(el);
     // ⌘-click a file path in the output to open it in the viewer (at the line, for path:line).

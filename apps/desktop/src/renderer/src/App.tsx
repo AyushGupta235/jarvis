@@ -1,16 +1,18 @@
 import { useEffect } from 'react';
-import { Sidebar } from './Sidebar';
+import { Sidebar, SidebarRail } from './Sidebar';
 import { TerminalHost } from './TerminalHost';
-import { NewSessionDialog, OpenFileDialog, QuickSwitcher, RenameDialog } from './Dialogs';
+import { NewSessionDialog, OpenFileDialog, PreviewDialog, QuickSwitcher, RenameDialog } from './Dialogs';
 import { Navigator } from './nav/Navigator';
 import { Viewer } from './Viewer';
 import { Resizer } from './Resizer';
 import { prIcon } from './nav/PrsTab';
-import { activeSession, fmtTokens, fmtUsd, setState, syncUi, tildify, useStore } from './store';
+import { activeSession, fmtTokens, fmtUsd, rpc, setState, syncUi, tildify, useStore } from './store';
 import { handleMenu } from './actions';
 
 export function App() {
   const sidebar = useStore((s) => s.sidebar);
+  const sidebarRail = useStore((s) => s.sidebarRail);
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
   const dialog = useStore((s) => s.dialog);
   const error = useStore((s) => s.error);
   const health = useStore((s) => s.snapshot?.health ?? null);
@@ -33,7 +35,12 @@ export function App() {
   const pct = a?.context?.usedPct ?? null;
   return (
     <div className={`app ${sidebar ? '' : 'no-sidebar'}`}>
-      {sidebar && <Sidebar />}
+      {sidebar && (sidebarRail ? <SidebarRail /> : (
+        <>
+          <div className="sidebar-wrap" style={{ width: sidebarWidth }}><Sidebar /></div>
+          <Resizer field="sidebarWidth" min={190} max={460} left collapseBelow={150} onCollapse={() => setState({ sidebarRail: true })} />
+        </>
+      ))}
       <main className="main" style={{ minWidth: viewerOpen ? 800 : 480 }}>
         <header className="titlebar drag">
           {active ? (
@@ -42,6 +49,10 @@ export function App() {
               <span className="tb-sep">·</span>
               <span className="tb-repo">{wsName}</span>
               {active.mode === 'rich' && <span className="chip rich" title="Driven through the Agent SDK and drawn by Jarvis">rich</span>}
+              {active.mode === 'terminal' && !active.external && active.agent === 'claude' && active.status === 'running' && (
+                <button className="chip rich no-drag" title="Reopen this conversation in the rich view"
+                  onClick={() => void rpc('sessions.switchMode', { id: active.id, mode: 'rich' }).catch(() => {})}>rich view ↗</button>
+              )}
               {active.worktree && <span className="chip">⑂ {active.worktree.split('/').pop()}</span>}
               {active.branch && <span className="chip branch">{active.branch}</span>}
               {active.pr && (() => {
@@ -89,6 +100,7 @@ export function App() {
       {dialog?.kind === 'switch' && <QuickSwitcher />}
       {dialog?.kind === 'rename' && <RenameDialog id={dialog.id} />}
       {dialog?.kind === 'open-file' && <OpenFileDialog />}
+      {dialog?.kind === 'preview' && <PreviewDialog />}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentDef, AgentKind, RepoCandidate, SessionInfo, SessionMode } from '@jarvis/protocol';
+import type { AgentDef, AgentKind, DevServer, RepoCandidate, SessionInfo, SessionMode } from '@jarvis/protocol';
 import { fuzzyFilter } from './fuzzy';
-import { activeSession, activity, ago, focusTerminal, getState, openInViewer, rpc, sessionRoot, setState, tildify, useStore } from './store';
+import { activeSession, activity, ago, focusTerminal, getState, openInViewer, openPreview, rpc, sessionRoot, setState, tildify, useStore } from './store';
 import { repoFiles, statusClass } from './nav/common';
 import type { FileEntry } from '@jarvis/protocol';
 import { activate } from './actions';
@@ -295,6 +295,63 @@ export function OpenFileDialog() {
         ))}
       </div>
       <div className="modal-hint">↑↓ pick · ↵ open in viewer · esc cancel</div>
+    </Modal>
+  );
+}
+
+/** ⇧⌘B: open a page in the viewer's web preview — a dev server found on this Mac, or any URL. */
+export function PreviewDialog() {
+  const session = useStore((s) => activeSession(s));
+  const root = sessionRoot(session);
+  const [servers, setServers] = useState<DevServer[] | null>(null);
+  const [query, setQuery] = useState('');
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    input.current?.focus();
+    void rpc<DevServer[]>('preview.servers', { root }).then(setServers).catch(() => setServers([]));
+  }, [root]);
+  const typedUrl = /^(https?:\/\/|localhost|127\.|\d+$)/i.test(query.trim())
+    ? (/^\d+$/.test(query.trim()) ? `http://localhost:${query.trim()}` : /^https?:\/\//i.test(query.trim()) ? query.trim() : `http://${query.trim()}`)
+    : null;
+  const filtered = useMemo(
+    () => fuzzyFilter(servers ?? [], typedUrl ? '' : query, (s) => `${s.port} ${s.command} ${s.cwd ?? ''}`).slice(0, 40),
+    [servers, query, typedUrl],
+  );
+  const [sel, setSel, navKey] = useListNav(filtered.length + (typedUrl ? 1 : 0));
+  const open = (url: string | undefined) => {
+    if (!url) return;
+    setState({ dialog: null });
+    openPreview(url);
+  };
+  const pick = () => (typedUrl && sel === 0 ? open(typedUrl) : open(filtered[sel - (typedUrl ? 1 : 0)]?.url));
+  return (
+    <Modal wide>
+      <input ref={input} className="modal-input" placeholder="Dev server, port or URL (e.g. 3000 or http://localhost:5173/settings)…"
+        value={query} onChange={(e) => { setQuery(e.target.value); setSel(0); }}
+        onKeyDown={(e) => {
+          if (navKey(e)) e.preventDefault();
+          else if (e.key === 'Enter') { e.preventDefault(); pick(); }
+        }} />
+      <div className="opt-list">
+        {typedUrl && (
+          <div className={`opt file-opt ${sel === 0 ? 'sel' : ''}`} onMouseMove={() => sel !== 0 && setSel(0)} onClick={() => open(typedUrl)}>
+            <span className="opt-name">Open {typedUrl}</span>
+            <span className="opt-path">web preview</span>
+          </div>
+        )}
+        {servers === null && <div className="opt muted">Looking for local servers…</div>}
+        {servers !== null && !servers.length && !typedUrl && <div className="opt muted">No local servers found. Type a URL or a port.</div>}
+        {filtered.map((s, i) => {
+          const idx = i + (typedUrl ? 1 : 0);
+          return (
+            <div key={s.port} className={`opt file-opt ${idx === sel ? 'sel' : ''}`} onMouseMove={() => idx !== sel && setSel(idx)} onClick={() => open(s.url)}>
+              <span className="opt-name">{s.inSession && <span className="tag">this repo</span>}:{s.port} <span className="muted">{s.command}</span></span>
+              <span className="opt-path">{s.cwd ? tildify(s.cwd) : ''}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="modal-hint">↑↓ pick · ↵ open beside the session · esc cancel</div>
     </Modal>
   );
 }

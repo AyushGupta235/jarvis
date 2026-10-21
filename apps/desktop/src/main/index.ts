@@ -6,6 +6,7 @@ import type { AttentionEvent, ContextMenuItem } from '../shared/ipc';
 import { DaemonClient } from './daemon';
 import { PtyManager, ensureSpawnHelper } from './pty';
 import { buildMenu } from './menu';
+import { DEFAULT_MONO_FONT, DEFAULT_THEME, DEFAULT_UI_FONT, THEMES, type AppearanceState } from '../shared/themes';
 import { loadBounds, toggleMaximize, trackBounds } from './windowState';
 
 app.setName('Jarvis');
@@ -44,6 +45,8 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: false,
+      // The web preview pane (Viewer → Preview) is a <webview>; will-attach-webview below locks it down.
+      webviewTag: true,
     },
   });
   trackBounds(win);
@@ -53,6 +56,21 @@ function createWindow(): void {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // Preview webviews: no preload, no Node, sandboxed, own cookie jar, and only http(s) pages.
+  win.webContents.on('will-attach-webview', (e, prefs, params) => {
+    delete prefs.preload;
+    prefs.nodeIntegration = false;
+    prefs.contextIsolation = true;
+    prefs.sandbox = true;
+    const src = params.src ?? '';
+    if (!/^https?:\/\//.test(src) && src !== 'about:blank') e.preventDefault();
+  });
+  win.webContents.on('did-attach-webview', (_e, guest) => {
+    guest.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+      return { action: 'deny' };
+    });
+  });
   const wc = win.webContents;
   win.on('closed', () => {
     ptys.closeAllFor(wc);
@@ -128,12 +146,24 @@ daemon.on('attention', (a: AttentionEvent) => {
   n.show();
 });
 
+/** The renderer's theme and fonts (View menu), mirrored here for the menu's checkmarks and the window chrome. */
+let look: AppearanceState = { theme: DEFAULT_THEME, uiFont: DEFAULT_UI_FONT, monoFont: DEFAULT_MONO_FONT, missingFonts: [] };
+
+function applyLook(): void {
+  // Match macOS chrome (vibrancy, dialogs, menus, scrollbars) to the theme, whatever the system appearance is.
+  nativeTheme.themeSource = THEMES.find((t) => t.id === look.theme)?.kind ?? 'dark';
+  buildMenu(() => win, () => win && toggleMaximize(win, maximized), isDev, look);
+}
+
+ipcMain.on('ui:appearance', (_e, a: AppearanceState) => {
+  look = a;
+  applyLook();
+});
+
 app.whenReady().then(() => {
-  // Rosé Pine Moon is a dark theme: keep the vibrancy material, dialogs and menus dark even in Light mode.
-  nativeTheme.themeSource = 'dark';
   ensureSpawnHelper();
   registerIpc();
-  buildMenu(() => win, () => win && toggleMaximize(win, maximized), isDev);
+  applyLook();
   daemon.start();
   createWindow();
   app.on('activate', () => {

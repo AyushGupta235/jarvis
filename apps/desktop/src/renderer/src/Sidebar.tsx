@@ -37,6 +37,7 @@ export function Sidebar() {
         <span className="brand">Jarvis</span>
         <span className={`daemon-dot ${connected ? 'ok' : 'down'}`} title={connected ? 'jarvisd connected' : 'jarvisd not reachable'} />
         <button className="icon-btn no-drag" title="New session (⌘T)" onClick={() => setState({ dialog: { kind: 'new' } })}>＋</button>
+        <button className="icon-btn no-drag" title="Collapse to icons (⌘B)" onClick={() => setState({ sidebarRail: true })}>⇤</button>
       </div>
       <div className="sidebar-scroll">
         {gs.map((g) => {
@@ -153,5 +154,51 @@ function Row({ s, index, active, now }: { s: SessionInfo; index: number; active:
         <span className="age">{act === 'working' ? (a?.costUsd ? fmtUsd(a.costUsd) : '') : ago(act === 'exited' ? s.exitedAt : (a?.since ?? s.lastActivity), now)}</span>
       </div>
     </div>
+  );
+}
+
+/**
+ * The sidebar collapsed (⌘B): one icon per session, in sidebar order, showing the agent and its state. Hover
+ * for the name, click to switch, right-click for the session menu.
+ */
+export function SidebarRail() {
+  const snapshot = useStore((s) => s.snapshot);
+  const showHidden = useStore((s) => s.showHidden);
+  const activeId = useStore((s) => s.activeId);
+  const unreadMap = useStore((s) => s.unread);
+  const connected = useStore((s) => s.status.connected);
+  const now = useNow();
+  const gs = useMemo(() => groups(snapshot, showHidden), [snapshot, showHidden]);
+  const agents = snapshot?.agents ?? [];
+  let n = 0;
+  return (
+    <aside className="sidebar rail">
+      <div className="sidebar-top drag rail-top">
+        <button className="icon-btn no-drag" title="Expand the sidebar (⌘B)" onClick={() => setState({ sidebarRail: false })}>⇥</button>
+      </div>
+      <div className="rail-scroll">
+        <button className="rail-new" title="New session (⌘T)" onClick={() => setState({ dialog: { kind: 'new' } })}>＋</button>
+        {gs.map((g) => (
+          <div key={g.ws.root} className="rail-group" title={g.ws.name}>
+            {g.sessions.map((s) => {
+              const i = n++;
+              const act = activity(s, now);
+              const def = agents.find((a) => a.id === s.agent);
+              return (
+                <button key={s.id} data-id={s.id}
+                  className={`rail-item ${act} ${s.id === activeId ? 'active' : ''} ${unreadMap[s.id] && s.id !== activeId ? 'unread' : ''}`}
+                  title={`${s.name}  ·  ${g.ws.name}${i < 9 ? `  (⌘${i + 1})` : ''}\n${act === 'needs_input' ? s.agentState?.message || 'needs your input' : act}`}
+                  onClick={() => activate(s.id)}
+                  onContextMenu={(e) => { e.preventDefault(); void sessionContextMenu(s); }}>
+                  <span className={`glyph ${s.agent}`}>{def?.glyph ?? s.agent.slice(0, 1)}</span>
+                  <i className={`dot ${act}`} />
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+      <div className="rail-foot"><span className={`daemon-dot ${connected ? 'ok' : 'down'}`} title={connected ? 'jarvisd connected' : 'jarvisd not reachable'} /></div>
+    </aside>
   );
 }

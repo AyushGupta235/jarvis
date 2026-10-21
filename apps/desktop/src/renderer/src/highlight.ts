@@ -1,12 +1,29 @@
-import { createHighlighter, bundledLanguages, type Highlighter, type BundledLanguage } from 'shiki';
+import { createHighlighter, bundledLanguages, type Highlighter, type BundledLanguage, type BundledTheme, type ThemeRegistration } from 'shiki';
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
 
 let hl: Promise<Highlighter> | null = null;
 const loaded = new Set<string>();
+const loadedThemes = new Set<string>(['rose-pine-moon']);
+/** Follows View → Theme (appearance.ts): a bundled theme's name, or a theme built from a Jarvis palette. */
+let codeTheme: string | ThemeRegistration = 'rose-pine-moon';
 
 function highlighter(): Promise<Highlighter> {
   hl ??= createHighlighter({ themes: ['rose-pine-moon'], langs: [], engine: createJavaScriptRegexEngine() });
   return hl;
+}
+
+export function setCodeTheme(theme: string | ThemeRegistration): void {
+  codeTheme = theme;
+}
+
+async function ensureTheme(h: Highlighter): Promise<string> {
+  const t = codeTheme;
+  const name = typeof t === 'string' ? t : t.name!;
+  if (!loadedThemes.has(name)) {
+    await h.loadTheme(t as BundledTheme | ThemeRegistration);
+    loadedThemes.add(name);
+  }
+  return name;
 }
 
 const EXT: Record<string, string> = {
@@ -42,7 +59,8 @@ export async function highlightLines(code: string, lang: string): Promise<string
   if (code.length > 400_000) return code.split('\n').map(escapeHtml);
   const h = await highlighter();
   const l = await ensureLang(h, lang);
-  const tokens = h.codeToTokensBase(code, { lang: l as BundledLanguage, theme: 'rose-pine-moon' });
+  const theme = await ensureTheme(h);
+  const tokens = h.codeToTokensBase(code, { lang: l as BundledLanguage, theme: theme as BundledTheme });
   return tokens.map((line) =>
     line.map((t) => `<span style="color:${t.color ?? 'inherit'}${t.fontStyle === 1 ? ';font-style:italic' : ''}${t.fontStyle === 2 ? ';font-weight:600' : ''}">${escapeHtml(t.content)}</span>`).join(''),
   );

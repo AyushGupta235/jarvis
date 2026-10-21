@@ -4,6 +4,29 @@ import { activeSession, clearUnread, closeViewerTab, focusTerminal, getState, na
 import { quoteSelection } from './quote';
 import { terminals } from './TerminalView';
 import { DEFAULT_FONT_SIZE } from './theme';
+import { applyAppearance, currentTheme, missingFonts, monoFamily, xtermThemeFor } from './appearance';
+
+/**
+ * Switch theme and/or fonts: CSS tokens, every open terminal, code highlighting, and main's View menu and
+ * macOS chrome. Omitted parts keep their current value.
+ */
+export function setAppearance(p: { theme?: string; uiFont?: string; monoFont?: string } = {}): void {
+  const st = getState();
+  const next = applyAppearance(p.theme ?? st.themeId, p.uiFont ?? st.uiFontId, p.monoFont ?? st.monoFontId);
+  setState({ themeId: next.theme, uiFontId: next.uiFont, monoFontId: next.monoFont, appearanceVersion: st.appearanceVersion + 1 });
+  const family = monoFamily();
+  const restyle = () => {
+    for (const t of terminals.values()) {
+      t.term.options.theme = xtermThemeFor(currentTheme());
+      t.term.options.fontFamily = family;
+      t.fit();
+    }
+  };
+  restyle();
+  // Bundled fonts load on first use; measure the terminal again once the new one has arrived.
+  void document.fonts.load(`13px ${family.split(',')[0]}`).then(restyle).catch(() => {});
+  window.jarvis.setAppearance({ ...next, missingFonts: missingFonts() });
+}
 
 const SHELLS = /^(zsh|bash|fish|sh|-zsh|-bash)$/;
 
@@ -114,11 +137,15 @@ function withActive(fn: (s: SessionInfo, st: State) => void | Promise<void>): vo
 export function handleMenu(action: MenuAction, arg?: number | string): void {
   const st = getState();
   // While a dialog is open, only let the dialog-opening shortcuts through.
-  if (st.dialog && !['new-session', 'quick-switch', 'quick-open', 'goto-session-id'].includes(action)) return;
+  if (st.dialog && !['new-session', 'quick-switch', 'quick-open', 'open-preview', 'goto-session-id'].includes(action)) return;
   switch (action) {
     case 'toggle-navigator': return setState((s) => ({ navOpen: !s.navOpen }));
     case 'nav-tab': return setState({ navOpen: true, navTab: arg as NavTab });
     case 'quick-open': return setState({ dialog: st.dialog?.kind === 'open-file' ? null : { kind: 'open-file' } });
+    case 'set-theme': return setAppearance({ theme: String(arg) });
+    case 'set-ui-font': return setAppearance({ uiFont: String(arg) });
+    case 'set-mono-font': return setAppearance({ monoFont: String(arg) });
+    case 'open-preview': return setState({ dialog: st.dialog?.kind === 'preview' ? null : { kind: 'preview' } });
     case 'toggle-viewer':
       if (!st.viewerTabs.length) return setState({ dialog: { kind: 'open-file' } });
       return setState((s) => ({ viewerOpen: !s.viewerOpen }));
@@ -164,7 +191,8 @@ export function handleMenu(action: MenuAction, arg?: number | string): void {
     case 'font-bigger': return setState((s) => ({ fontSize: Math.min(28, s.fontSize + 1) }));
     case 'font-smaller': return setState((s) => ({ fontSize: Math.max(8, s.fontSize - 1) }));
     case 'font-reset': return setState({ fontSize: DEFAULT_FONT_SIZE });
-    case 'toggle-sidebar': return setState((s) => ({ sidebar: !s.sidebar }));
+    // ⌘B collapses the sidebar to a rail of session icons and back (a hidden sidebar comes back as the full one).
+    case 'toggle-sidebar': return setState((s) => (s.sidebar ? { sidebarRail: !s.sidebarRail } : { sidebar: true, sidebarRail: false }));
     case 'toggle-hidden': return setState((s) => ({ showHidden: !s.showHidden }));
   }
 }

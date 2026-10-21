@@ -2,7 +2,9 @@
 
 Written 2026-10-21 against `@anthropic-ai/claude-agent-sdk` 0.3.306 (it bundles the same Claude Code binary as CLI 2.1.306) and your last 30 days of tool calls.
 
-**Status: R0 done (2026-10-21).** Rich sessions run, render as plain text, ask for permissions, and survive quitting Jarvis, a jarvisd restart, and a killed host (revive resumes from the transcript). Acceptance: `pnpm e2e:rich`, 23 checks, passing in dev and against the packaged app.
+**Status (2026-10-21):** R0 done, and pulled forward from later phases: markdown rendering (R1), every slash command with native `/resume`, `/model`, `/effort`, `/permissions`, `/status`, `/copy`, `/export` (R2), moving a conversation between terminal and rich view (R4), and readable thinking. Still to come: the tool-specific cards (Bash, MCP, API, tests), the calls timeline, streaming text, questions and plan approval cards.
+
+**R0 detail:** Rich sessions run, render as plain text, ask for permissions, and survive quitting Jarvis, a jarvisd restart, and a killed host (revive resumes from the transcript). Acceptance: `pnpm e2e:rich`, 23 checks, passing in dev and against the packaged app.
 
 ## 1. What and why
 

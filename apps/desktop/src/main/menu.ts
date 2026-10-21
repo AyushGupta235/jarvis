@@ -1,10 +1,15 @@
 import { Menu, app, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
 import type { MenuAction } from '../shared/ipc';
+import { MONO_FONTS, THEMES, UI_FONTS, type AppearanceState } from '../shared/themes';
 
-export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => void, isDev: boolean): void {
+export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => void, isDev: boolean, look: AppearanceState): void {
   const send = (action: MenuAction, arg?: number | string) => () => getWin()?.webContents.send('menu', action, arg);
   const item = (label: string, accelerator: string | undefined, action: MenuAction, arg?: number | string): MenuItemConstructorOptions => ({
     label, accelerator, click: send(action, arg),
+  });
+
+  const radio = (label: string, checked: boolean, action: MenuAction, arg: string, missing = false): MenuItemConstructorOptions => ({
+    label: missing ? `${label} (not installed)` : label, type: 'radio', checked, enabled: !missing, click: send(action, arg),
   });
 
   const gotoItems: MenuItemConstructorOptions[] = Array.from({ length: 9 }, (_, i) => ({
@@ -79,6 +84,7 @@ export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => 
       submenu: [
         item('Toggle Navigator', 'CmdOrCtrl+J', 'toggle-navigator'),
         item('Open File…', 'CmdOrCtrl+O', 'quick-open'),
+        item('Open Web Preview…', 'CmdOrCtrl+Shift+B', 'open-preview'),
         item('Toggle File Viewer', 'CmdOrCtrl+\\', 'toggle-viewer'),
         item('Close Viewer Tab', 'CmdOrCtrl+Alt+W', 'close-viewer-tab'),
         { type: 'separator' },
@@ -89,12 +95,35 @@ export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => 
         item('Pull Requests', 'CmdOrCtrl+Alt+5', 'nav-tab', 'prs'),
         item('Connectors', 'CmdOrCtrl+Alt+6', 'nav-tab', 'connectors'),
         item('Usage', 'CmdOrCtrl+Alt+7', 'nav-tab', 'usage'),
+        item('Thinking', 'CmdOrCtrl+Alt+8', 'nav-tab', 'thinking'),
       ],
     },
     {
       label: 'View',
       submenu: [
-        item('Toggle Sidebar', 'CmdOrCtrl+B', 'toggle-sidebar'),
+        item('Collapse Sidebar', 'CmdOrCtrl+B', 'toggle-sidebar'),
+        { type: 'separator' },
+        {
+          label: 'Theme',
+          submenu: [
+            { label: 'Jarvis Originals', enabled: false },
+            ...THEMES.filter((t) => t.original).map((t) => radio(`${t.label}${t.kind === 'light' ? ' (light)' : ''}`, look.theme === t.id, 'set-theme', t.id)),
+            { type: 'separator' },
+            { label: 'Dark Classics', enabled: false },
+            ...THEMES.filter((t) => !t.original && t.kind === 'dark').map((t) => radio(t.label, look.theme === t.id, 'set-theme', t.id)),
+            { type: 'separator' },
+            { label: 'Light Classics', enabled: false },
+            ...THEMES.filter((t) => !t.original && t.kind === 'light').map((t) => radio(t.label, look.theme === t.id, 'set-theme', t.id)),
+          ],
+        },
+        {
+          label: 'Interface Font',
+          submenu: UI_FONTS.map((f) => radio(f.label, look.uiFont === f.id, 'set-ui-font', f.id, look.missingFonts.includes(f.id))),
+        },
+        {
+          label: 'Terminal Font',
+          submenu: MONO_FONTS.map((f) => radio(f.label, look.monoFont === f.id, 'set-mono-font', f.id, look.missingFonts.includes(f.id))),
+        },
         { type: 'separator' },
         item('Bigger Text', 'CmdOrCtrl+=', 'font-bigger'),
         item('Smaller Text', 'CmdOrCtrl+-', 'font-smaller'),

@@ -17,6 +17,7 @@ const api: JarvisApi & { initialState(): Promise<unknown> } = {
   onFilesChanged: (cb) => on('files.changed', cb),
   onAttention: (cb) => on('attention', cb),
   onRichEvent: (cb) => on('rich.event', cb),
+  setAppearance: (a) => ipcRenderer.send('ui:appearance', a),
   setUiState: (activeId, badge) => ipcRenderer.send('ui:state', activeId, badge),
   ptyOpen: (sessionId, cols, rows) => ipcRenderer.invoke('pty:open', sessionId, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.send('pty:write', id, data),
