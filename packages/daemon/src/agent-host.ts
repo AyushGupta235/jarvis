@@ -13,6 +13,7 @@ import { forkSession, listSessions, query, type PermissionResult, type Query, ty
 import { randomUUID } from 'node:crypto';
 import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
 import { readChain, type Chain } from './transcript';
+import { agentResultTask, agentStatsFromTranscript } from './subagents';
 import { COMPACT_SUMMARY_PREFIX, parseAgentMessage, parseLocalCommand, parseTaskNotification, userText } from './notices';
 import { findTranscript } from './thinking';
 import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -127,6 +128,14 @@ function pushTask(taskId: string, toolUseId: string | null, state: Extract<RichE
   });
 }
 
+/** A sub-agent's final totals (tokens, tool calls, time, model) arrive with its tool result; they update its card. */
+function liveAgentResult(message: any, result: unknown): void {
+  if (!result || typeof result !== 'object') return;
+  const id = (Array.isArray(message?.content) ? message.content : []).find((b: any) => b?.type === 'tool_result')?.tool_use_id;
+  const t = id ? agentResultTask(id, result as Record<string, any>) : null;
+  if (t && t.state !== 'running') push(t);
+}
+
 /** Last time anything arrived from Claude; with the state below it tells a held queue that nothing is going to flush it. */
 let lastActivity = Date.now();
 
@@ -197,6 +206,7 @@ function onSdkMessage(m: SDKMessage): void {
         foldQueued();
       }
       fromMessage('user', m.message, m.parent_tool_use_id, false);
+      liveAgentResult(m.message, (m as { tool_use_result?: unknown }).tool_use_result);
       return;
     case 'rate_limit_event': {
       const info = m.rate_limit_info as { unifiedWindows?: Record<string, { utilization?: number; resetsAt?: number }>; rateLimitType?: string; utilization?: number; resetsAt?: number };
@@ -665,10 +675,21 @@ async function main(): Promise<void> {
   if (c.resume) {
     // The conversation so far, from Claude's transcript, so a revived session shows all of its history.
     const chain = await findAndRead(c.agentSessionId);
+    const transcriptPath = findTranscript(c.agentSessionId);
     if (chain.total > chain.entries.length) push({ kind: 'resumed', messages: chain.total, shown: chain.entries.length });
     for (const m of chain.entries) {
       if (m.type === 'compact') push({ kind: 'compact', ...m.compact }, true);
-      else fromMessage(m.type, m.message, m.parentToolUseId, true);
+      else {
+        fromMessage(m.type, m.message, m.parentToolUseId, true);
+        const id = (Array.isArray(m.message?.content) ? m.message.content : []).find((b: any) => b?.type === 'tool_result')?.tool_use_id;
+        const t = id ? agentResultTask(id, m.toolUseResult) : null;
+        if (t && t.state === 'running' && t.background && transcriptPath) {
+          // A background agent's result holds no totals; count what it did from its own transcript.
+          const st = await agentStatsFromTranscript(transcriptPath, t.taskId).catch(() => null);
+          if (st) Object.assign(t, { tools: st.tools, durationMs: st.durationMs });
+        }
+        if (t) push(t, true);
+      }
     }
     if (chain.total <= chain.entries.length) push({ kind: 'resumed', messages: chain.total });
   }
@@ -704,8 +725,8 @@ async function main(): Promise<void> {
         const requestId = randomUUID();
         pending.set(requestId, { input, resolve });
         if (tool === 'AskUserQuestion') {
-          push({ kind: 'question_request', requestId, questions: ((input as { questions?: RichQuestion[] }).questions ?? []) });
-        } else push({ kind: 'permission_request', requestId, tool, input, reason: opts.decisionReason ?? null });
+          push({ kind: 'question_request', requestId, questions: ((input as { questions?: RichQuestion[] }).questions ?? []), agentId: opts.agentID ?? null });
+        } else push({ kind: 'permission_request', requestId, tool, input, reason: opts.decisionReason ?? null, agentId: opts.agentID ?? null });
         opts.signal.addEventListener('abort', () => {
           if (pending.has(requestId)) resolvePermission(requestId, 'deny', 'Cancelled');
         });

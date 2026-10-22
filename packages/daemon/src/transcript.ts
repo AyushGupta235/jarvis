@@ -9,6 +9,8 @@ export interface ChainEntry {
   parentToolUseId: string | null;
   ts: number | null;
   /** For a compaction marker: what Claude recorded about it. */
+  /** For a user entry that returns a tool's result: Claude's structured result (a sub-agent's id, tokens, duration...). */
+  toolUseResult?: Record<string, any>;
   compact?: { trigger?: 'manual' | 'auto'; preTokens?: number; postTokens?: number; durationMs?: number };
 }
 
@@ -54,7 +56,10 @@ export async function readChain(path: string, limit = 2500): Promise<Chain> {
     parent.set(r.uuid, r.parentUuid ?? r.logicalParentUuid ?? null);
     const ts = r.timestamp ? Date.parse(r.timestamp) : null;
     if (r.type === 'user' || r.type === 'assistant') {
-      keep.set(r.uuid, { uuid: r.uuid, type: r.type, message: r.message, parentToolUseId: r.parent_tool_use_id ?? null, ts, isMeta: !!r.isMeta });
+      keep.set(r.uuid, {
+        uuid: r.uuid, type: r.type, message: r.message, parentToolUseId: r.parent_tool_use_id ?? null, ts, isMeta: !!r.isMeta,
+        ...(r.toolUseResult && typeof r.toolUseResult === 'object' ? { toolUseResult: r.toolUseResult } : {}),
+      });
       newest = r.uuid;
     } else if (r.type === 'system' && r.subtype === 'compact_boundary') {
       const c = r.compactMetadata;
@@ -71,7 +76,34 @@ export async function readChain(path: string, limit = 2500): Promise<Chain> {
     if (keep.has(u)) walked.push(u);
   }
   walked.reverse();
-  const all = walked.map((u) => keep.get(u)!).filter((e) => !(e as { isMeta?: boolean }).isMeta);
+  const onPath = new Set(walked);
+  const pathEntries = walked.map((u) => keep.get(u)!).filter((e) => !(e as { isMeta?: boolean }).isMeta);
+  // Parallel tool calls are stored as a fork: each call is its own entry chained to the previous call, and each
+  // result hangs off its own call, so walking back from the newest message visits only one of them. The calls and
+  // results that hang off the path belong to the conversation too (a rewound branch's do not: they hang off nothing on it).
+  const toolIds = new Set<string>();
+  const idsIn = (e: ChainEntry) => (Array.isArray(e.message?.content) ? e.message.content : []) as any[];
+  for (const e of pathEntries) for (const b of idsIn(e)) if (b?.type === 'tool_use') toolIds.add(b.id);
+  const accepted = new Set(onPath);
+  const extras: ChainEntry[] = [];
+  for (const [uuid, e] of keep) {
+    if (accepted.has(uuid) || (e as { isMeta?: boolean }).isMeta) continue;
+    const blocks = idsIn(e);
+    if (e.type === 'assistant' && blocks.some((b) => b?.type === 'tool_use') && accepted.has(parent.get(uuid) ?? '')) {
+      accepted.add(uuid);
+      extras.push(e);
+      for (const b of blocks) if (b?.type === 'tool_use') toolIds.add(b.id);
+    } else if (e.type === 'user' && blocks.length && blocks.every((b) => b?.type === 'tool_result') && blocks.some((b) => toolIds.has(b.tool_use_id))) {
+      accepted.add(uuid);
+      extras.push(e);
+    }
+  }
+  const all: ChainEntry[] = [...pathEntries];
+  for (const x of extras) {
+    let at = -1;
+    for (let i = 0; i < all.length; i++) if (all[i]!.ts != null && x.ts != null && all[i]!.ts! <= x.ts) at = i;
+    all.splice(at + 1, 0, x);
+  }
   const prompts: Chain['prompts'] = [];
   let lastMessage: string | null = null;
   for (const e of all) {
@@ -79,7 +111,7 @@ export async function readChain(path: string, limit = 2500): Promise<Chain> {
       const text = promptText(e.message?.content);
       if (text) prompts.push({ uuid: e.uuid, text, ts: e.ts, before: lastMessage });
     }
-    if (e.type !== 'compact') lastMessage = e.uuid;
+    if (e.type !== 'compact' && onPath.has(e.uuid)) lastMessage = e.uuid;
   }
   return { entries: all.slice(-limit), prompts, total: all.length };
 }

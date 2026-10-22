@@ -48,6 +48,7 @@ export function buildHandlers(svc: JarvisService, shutdown: () => void): Record<
     'rich.fork': (p) => svc.richFork(p.id, p.prompt),
     'rich.cd': (p) => svc.richCd(p.id, String(p.path ?? '')),
     'rich.hooks': (p) => svc.richHooks(p.id),
+    'rich.agentSteps': (p) => svc.richAgentSteps(p.id, String(p.agentId ?? ''), String(p.toolUseId ?? '')),
     'rich.queue': (p) => svc.richQueue(p.id, p.uuid, p.action, p.text),
     'rich.respond': (p) => { svc.richRespond(p.id, p.requestId, p.behavior === 'allow' ? 'allow' : 'deny', p.message); return { ok: true }; },
     'rich.answer': (p) => { svc.richAnswer(p.id, p.requestId, p.answers ?? {}); return { ok: true }; },

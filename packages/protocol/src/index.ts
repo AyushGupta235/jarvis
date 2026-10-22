@@ -50,7 +50,7 @@ export type SessionMode = 'terminal' | 'rich';
  * Bumped whenever the rich session host (packages/daemon/src/agent-host.ts) gains something the app relies on.
  * Hosts outlive app updates, so a session whose host reports an older number is offered a restart.
  */
-export const RICH_HOST_PROTOCOL = 5;
+export const RICH_HOST_PROTOCOL = 6;
 
 export interface SessionInfo {
   /** Stable short id. External sessions use `ext:<tmux name>`. */
@@ -343,9 +343,9 @@ export type RichEvent =
   | { kind: 'thinking'; text: string; parentToolUseId: string | null }
   | { kind: 'tool_start'; toolUseId: string; tool: string; input: unknown; parentToolUseId: string | null }
   | { kind: 'tool_end'; toolUseId: string; output: string; isError: boolean }
-  | { kind: 'permission_request'; requestId: string; tool: string; input: unknown; reason: string | null }
+  | { kind: 'permission_request'; requestId: string; tool: string; input: unknown; reason: string | null; agentId?: string | null }
   /** Claude's multiple-choice question (the AskUserQuestion tool); answered with rich.answer, or skipped with rich.respond deny. */
-  | { kind: 'question_request'; requestId: string; questions: RichQuestion[] }
+  | { kind: 'question_request'; requestId: string; questions: RichQuestion[]; agentId?: string | null }
   | { kind: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny'; answers?: Record<string, string | string[]> }
   | { kind: 'status'; model: string | null; permissionMode: string | null; agentSessionId: string | null; cwd: string | null; authSource: string | null }
   | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null; stopped?: boolean }
@@ -364,7 +364,7 @@ export type RichEvent =
   | {
     kind: 'task'; taskId: string; toolUseId: string | null; state: 'running' | 'done' | 'failed' | 'stopped';
     description: string | null; agentType: string | null; tools: number | null; tokens: number | null; durationMs: number | null;
-    lastTool: string | null; progress: string | null; background: boolean;
+    lastTool: string | null; progress: string | null; background: boolean; model?: string | null;
   }
   /** A message from a background task (finished, stopped, or a monitor's event) that Claude Code injected as a prompt. */
   | { kind: 'task_notice'; taskId: string; toolUseId: string | null; status: 'completed' | 'failed' | 'stopped' | 'event'; summary: string; event: string | null }
@@ -526,6 +526,8 @@ export interface RpcMethods {
   /** A message held in the queue: change its text, drop it, or hand it to Claude now (which stops the current turn). */
   'rich.queue': [{ id: string; uuid: string; action: 'edit' | 'remove' | 'sendNow'; text?: string }, { ok: boolean; reason?: string }];
   'rich.respond': [{ id: string; requestId: string; behavior: 'allow' | 'deny'; message?: string }, { ok: true }];
+  /** The steps a finished sub-agent took, from its own transcript, for a card opened after a restart. */
+  'rich.agentSteps': [{ id: string; agentId: string; toolUseId: string }, { events: RichEvent[] }];
   /** /btw: ask a side question about the conversation without adding to it; the answer arrives as a `btw` event. */
   'rich.btw': [{ id: string; question: string }, { id: string }];
   /** /mcp: the session's MCP servers, and reconnect or enable/disable one. */

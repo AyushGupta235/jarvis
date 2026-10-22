@@ -7,7 +7,7 @@ import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
 import { resolveLocalHref, toolLine } from './toolText';
 import { DENSITIES } from '../../shared/themes';
-import { AgentCard, BtwCard, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, fmtDuration, isAgentTool, taskByTool } from './RichParts';
+import { AgentCard, type AgentCtx, BtwCard, RunAgentPanel, agentRequest, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, fmtDuration, isAgentTool, taskByTool } from './RichParts';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, canonicalName, commandCatalog, matchCommands, parseCommand, type Command,
 } from './richCommands';
@@ -120,8 +120,8 @@ function ThinkingGroup({ texts, sub }: { texts: string[]; sub: string }) {
  * than one can be picked), an "Other" box for your own answer, and Send or Skip. Your answer goes back to
  * Claude, which carries on with it.
  */
-function QuestionCard({ questions, disabled, onAnswer, onSkip }: {
-  questions: RichQuestion[]; disabled: boolean;
+function QuestionCard({ questions, disabled, from, onAnswer, onSkip }: {
+  questions: RichQuestion[]; disabled: boolean; from?: string | null;
   onAnswer: (answers: Record<string, string | string[]>) => void; onSkip: () => void;
 }) {
   const [picked, setPicked] = useState<Record<number, string[]>>({});
@@ -141,7 +141,7 @@ function QuestionCard({ questions, disabled, onAnswer, onSkip }: {
   });
   return (
     <div className="rv-ask">
-      <div className="rv-ask-title">Claude is asking</div>
+      <div className="rv-ask-title">{from ? `Sub-agent asking: ${from}` : 'Claude is asking'}</div>
       {questions.map((q, i) => (
         <div key={i} className="rv-ask-q">
           <div className="rv-ask-head">{q.header && <span className="rv-ask-tag">{q.header}</span>}<span>{q.question}</span></div>
@@ -326,6 +326,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   const [draft, setDraft] = useState('');
   const [info, setInfo] = useState<RichInfo | null>(null);
   const [picker, setPicker] = useState<PickerState>(null);
+  const [runAgent, setRunAgent] = useState<{ agents: { name: string; description: string; model: string | null }[]; prompt: string; background: boolean } | null>(null);
   const [accent, setAccent] = useState(() => { try { return localStorage.getItem(`jarvis.rv.accent.${session.id}`) ?? ''; } catch { return ''; } });
   const [context, setContext] = useState<RichContext | 'loading' | null>(null);
   const [paletteSel, setPaletteSel] = useState(0);
@@ -458,7 +459,8 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   // Sub-agents own their steps, and a task's reports stack: both are drawn once, where they start.
   const structure = useMemo(() => {
     const agents = new Set<string>();
-    for (const { event: e } of events) if (e.kind === 'tool_start' && isAgentTool(e.tool)) agents.add(e.toolUseId);
+    const starts = new Map<string, Ev<'tool_start'>>();
+    for (const { event: e } of events) if (e.kind === 'tool_start' && isAgentTool(e.tool)) { agents.add(e.toolUseId); starts.set(e.toolUseId, e); }
     const kids = new Map<string, RichEnvelope[]>();
     const hidden = new Set<number>();
     const notices = new Map<number, Ev<'task_notice'>[]>();
@@ -514,7 +516,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       if (e.kind === 'compacting') lastCompacting = env.seq;
       else if (e.kind === 'compact') lastCompact = env.seq;
     }
-    return { kids, hidden, notices, reports, btw, compactingSeq: lastCompacting > lastCompact ? lastCompacting : -1, tasks: taskByTool(events) };
+    return { kids, hidden, notices, reports, btw, starts, compactingSeq: lastCompacting > lastCompact ? lastCompacting : -1, tasks: taskByTool(events) };
   }, [events]);
 
   // Background commands and sub-agents, latest state per task, for /tasks.
@@ -527,6 +529,15 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     }
     return m;
   }, [events]);
+
+  /** Which sub-agent a request came from, in words ("Explore · map docs"). */
+  const agentLabel = (agentId: string | null | undefined): string | null => {
+    if (!agentId) return null;
+    const t = taskStates.get(agentId);
+    const st = t?.toolUseId ? structure.starts.get(t.toolUseId) : undefined;
+    const inp = (st?.input ?? {}) as { description?: string; subagent_type?: string };
+    return [t?.agentType ?? inp.subagent_type, inp.description].filter(Boolean).join(' · ') || 'a sub-agent';
+  };
 
   const catalog = useMemo(() => commandCatalog(info), [info]);
   const paletteQuery = /^\/([\w:.@-]*)$/.exec(draft)?.[1];
@@ -591,10 +602,13 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         await rpc<SessionInfo>('rich.fork', { id: session.id, prompt: cmd.args || undefined })
           .then((s) => setNote(`Forked into "${s.name}" (in the sidebar). This one carries on.`)).catch(fail);
         return;
-      case 'subtask':
-        if (!cmd.args) return setNote('Usage: /subtask <task>');
-        await sendText(`Start a background subagent (the Agent tool with run_in_background true) that carries on from this conversation and does the following while we keep working. Report back when it is done.\n\n${cmd.args}`);
+      case 'agent':
+      case 'subtask': {
+        const r = await rpc<{ agents: { name: string; description: string; model: string | null }[] }>('rich.agents', { id: session.id }).catch(() => ({ agents: [] }));
+        setPicker(null);
+        setRunAgent({ agents: r.agents, prompt: cmd.args, background: cmd.name === 'subtask' });
         return;
+      }
       case 'diff':
         setState({ navOpen: true, navTab: 'changes' });
         return;
@@ -941,9 +955,14 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     setNote(r?.backgrounded ? 'Moved the running task to the background' : 'Nothing running to background');
   };
 
+  const agentCtx: AgentCtx = useMemo(() => ({
+    sessionId: session.id, cwd: session.cwd, showThinking: density === 'detailed',
+    kidsOf: (id) => structure.kids.get(id) ?? [], ends, taskOf: (id) => structure.tasks.get(id), reportOf: (id) => structure.reports.get(id),
+  }), [session.id, session.cwd, density, structure, ends]);
+
   const rows = useMemo(() => {
   let lastStatus = '';
-  return events.map(({ seq, event: e, replay }) => {
+  return events.map(({ seq, ts, event: e, replay }) => {
     const key = `${seq}`;
     if (structure.hidden.has(seq)) return null;
     const sub = 'parentToolUseId' in e && e.parentToolUseId ? ' rv-sub' : '';
@@ -975,10 +994,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       case 'tool_start': {
         if (e.tool === 'AskUserQuestion') return null; // the question card (or the "Asked:" line) stands in for it
         const end = ends.get(e.toolUseId);
-        if (isAgentTool(e.tool)) {
-          return <AgentCard key={key} start={e} end={end} kids={structure.kids.get(e.toolUseId) ?? []} ends={ends}
-            task={structure.tasks.get(e.toolUseId)} report={structure.reports.get(e.toolUseId)} cwd={session.cwd} showThinking={density === 'detailed'} />;
-        }
+        if (isAgentTool(e.tool)) return <AgentCard key={key} start={e} startTs={ts} end={end} ctx={agentCtx} />;
         const state = !end ? 'running' : end.isError ? 'error' : 'ok';
         return (
           <details key={key} className={`rv-tool ${state}${sub}${density === 'detailed' ? ' compact' : ''}`} open={state === 'error'}>
@@ -1006,7 +1022,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           );
         }
         return (
-          <QuestionCard key={key} questions={e.questions} disabled={!connected}
+          <QuestionCard key={key} questions={e.questions} disabled={!connected} from={agentLabel(e.agentId)}
             onAnswer={(answers) => void rpc('rich.answer', { id: session.id, requestId: e.requestId, answers }).catch(() => {})}
             onSkip={() => respond(e.requestId, 'deny')} />
         );
@@ -1019,6 +1035,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         return (
           <div key={key} className="rv-perm">
             <div className="rv-perm-title">Allow <b>{e.tool}</b>?</div>
+            {e.agentId && <div className="rv-perm-from">asked by sub-agent: {agentLabel(e.agentId)}</div>}
             <div className="rv-perm-arg">{toolLine(e.tool, e.input, session.cwd)}</div>
             {e.reason && <div className="rv-perm-reason">{e.reason}</div>}
             <div className="rv-perm-actions">
@@ -1078,7 +1095,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   });
   // Typing in the composer must not re-render the whole conversation (thousands of rows in a long history).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, density, ends, resolved, answersById, thinking, structure, status, connected, session.cwd, session.id, queuedText, foldedMid]);
+  }, [events, density, ends, resolved, answersById, thinking, structure, agentCtx, taskStates, status, connected, session.cwd, session.id, queuedText, foldedMid]);
   return (
     <div className="rich-wrap" data-accent={accent || undefined}
       style={{ display: visible ? 'flex' : 'none', ...(accent && ACCENTS[accent] ? { ['--rv-accent' as string]: ACCENTS[accent] } : {}) }} onMouseDown={() => picker && setPicker(null)}
@@ -1126,6 +1143,8 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       <div className="rv-composer">
         {context && <ContextPanel data={context} onClose={() => { setContext(null); input.current?.focus(); }}
           onCompact={() => { setContext(null); void sendText('/compact'); }} />}
+        {runAgent && <RunAgentPanel agents={runAgent.agents} initial={runAgent} onClose={() => { setRunAgent(null); input.current?.focus(); }}
+          onRun={(o) => { setRunAgent(null); void sendText(agentRequest(o)); input.current?.focus(); }} />}
         {picker && <Picker {...picker} onClose={() => { setPicker(null); input.current?.focus(); }} />}
         {waiting.length > 0 && (
           <QueueTray items={waiting} paused={pausedQueue} onAction={(uuid, action, text) => {
@@ -1184,6 +1203,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           <span className="muted">{working ? `working${session.agentState?.tool ? `: ${session.agentState.tool}` : ''}` : connected ? 'ready' : 'disconnected'}</span>
           {note && <span className="rv-toast">{note}</span>}
           <span className="strip-spacer" />
+          <button className="chip-btn" disabled={!connected} title="Run a sub-agent: pick its kind and give it a task" onClick={() => void runCommand('/agent')}>Agent</button>
           <button className="chip-btn" disabled={!connected || !draft.trim()} onClick={() => void submit()}>Send <kbd>↵</kbd></button>
         </div>
       </div>

@@ -4,7 +4,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, r
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import type {
-  ActivityEntry, AgentDef, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent,
+  ActivityEntry, AgentDef, AgentLiveState, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent,
   FileEntry, RepoCandidate, RichConversation, RichEnvelope, RichInfo, RichPermissionMode, SessionInfo, SessionMode, Snapshot,
   UsageSummary, WorkspaceInfo,
 } from '@jarvis/protocol';
@@ -26,6 +26,7 @@ import { Tmux, type LiveSession } from './tmux';
 import { BranchCache, createWorktree, listWorktrees, locate, scanRepos, slugify } from './git';
 import { TitleTracker } from './titles';
 import { readHooks } from './hooks';
+import { readAgentSteps } from './subagents';
 import { userShell } from './env';
 import { log, logError } from './log';
 
@@ -104,6 +105,8 @@ export class JarvisService extends EventEmitter {
   private external: LiveSession[] = [];
   private branches = new BranchCache();
   private titles = new TitleTracker(process.env.JARVIS_CLAUDE_HOME);
+  /** Sub-agents per rich session by task id (running or not): the hooks miss some when several start at once. */
+  private richAgentTasks = new Map<string, Map<string, string>>();
   private lastSnapshotJson = '';
   private timer: NodeJS.Timeout | null = null;
   private tick = 0;
@@ -158,6 +161,11 @@ export class JarvisService extends EventEmitter {
         o.observers.patch(id, { context: { usedPct: ev.usedPct, usedTokens: ev.usedTokens, windowTokens: ev.windowTokens } });
       }
       if (ev.kind === 'limits') o.observers.setClaudeLimits(ev);
+      if (ev.kind === 'task' && ev.agentType) {
+        const m = this.richAgentTasks.get(id) ?? new Map<string, string>();
+        m.set(ev.taskId, ev.state);
+        this.richAgentTasks.set(id, m);
+      }
       if (ev.kind === 'question_request') o.observers.setPhase(id, 'needs_input', `Question: ${ev.questions[0]?.header || ev.questions[0]?.question || 'Claude asks'}`);
       else if (ev.kind === 'permission_request') o.observers.setPhase(id, 'needs_input', `Permission: ${ev.tool}`);
       else if (ev.kind === 'permission_resolved' && o.observers.state(id)?.phase === 'needs_input') o.observers.setPhase(id, 'working');
@@ -286,9 +294,16 @@ export class JarvisService extends EventEmitter {
       lastActivity: l?.activity ?? (isRich ? this.richLastActivity(r.id) : null), attachedClients: l?.attached ?? 0,
       paneCommand: l?.currentCommand ?? (isRich && running ? 'claude (rich)' : null),
       panePid: l?.panePid ?? null, external: false, order: r.sort_order,
-      agentState: this.o.observers.state(r.id),
+      agentState: this.agentStateFor(r),
       pr: this.o.prs.forBranch(this.o.remotes.get(r.repo_root), this.branches.get(path)),
     };
+  }
+
+  private agentStateFor(r: SessionRow): AgentLiveState | null {
+    const st = this.o.observers.state(r.id);
+    const tasks = r.mode === 'rich' ? this.richAgentTasks.get(r.id) : undefined;
+    if (!st || !tasks) return st;
+    return { ...st, subagentsRunning: [...tasks.values()].filter((v) => v === 'running').length };
   }
 
   private richLastActivity(id: string): number | null {
@@ -360,6 +375,7 @@ export class JarvisService extends EventEmitter {
   }
 
   private async startRich(row: SessionRow, resume: boolean): Promise<void> {
+    this.richAgentTasks.delete(row.id); // the new host replays what its agents did
     await this.o.rich.start({
       id: row.id, cwd: row.cwd, agentSessionId: row.agent_session_id!, resume, model: row.model, permissionMode: row.permission_mode,
     });
@@ -497,6 +513,14 @@ export class JarvisService extends EventEmitter {
     log(`rich ${id}: moved to ${dir}`);
     await this.poll();
     return this.toInfo(this.row(id));
+  }
+
+  /** The steps a finished sub-agent took, read from its own transcript. */
+  async richAgentSteps(id: string, agentId: string, toolUseId: string) {
+    const r = this.row(id);
+    const path = r.agent_session_id ? findTranscript(r.agent_session_id, process.env.JARVIS_CLAUDE_HOME || undefined) : null;
+    if (!path || !/^[a-z0-9]+$/i.test(agentId)) return { events: [] };
+    return { events: await readAgentSteps(path, agentId, toolUseId) };
   }
 
   richHooks(id: string) {
