@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import type {
   ActivityEntry, AgentDef, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent,
   FileEntry, RepoCandidate, RichConversation, RichEnvelope, RichInfo, RichPermissionMode, SessionInfo, SessionMode, Snapshot,
@@ -25,6 +25,7 @@ import { isPlaceholderName, type Db, type SessionRow } from './db';
 import { Tmux, type LiveSession } from './tmux';
 import { BranchCache, createWorktree, listWorktrees, locate, scanRepos, slugify } from './git';
 import { TitleTracker } from './titles';
+import { readHooks } from './hooks';
 import { userShell } from './env';
 import { log, logError } from './log';
 
@@ -377,6 +378,26 @@ export class JarvisService extends EventEmitter {
     this.o.rich.interrupt(id);
   }
 
+  richBtw(id: string, question: string): Promise<{ id: string }> {
+    return this.o.rich.request<{ id: string }>(id, 'btw', { question });
+  }
+
+  richMcp(id: string, action: 'status' | 'reconnect' | 'toggle', name?: string, enabled?: boolean) {
+    return this.o.rich.request<{ servers: import('@jarvis/protocol').RichMcpServer[] }>(id, 'mcp', { action, name, enabled }, 60_000);
+  }
+
+  richAgents(id: string) {
+    return this.o.rich.request<{ agents: { name: string; description: string; model: string | null }[] }>(id, 'agents');
+  }
+
+  richStopTask(id: string, taskId: string) {
+    return this.o.rich.request<{ ok: boolean }>(id, 'stop_task', { taskId });
+  }
+
+  richAddDir(id: string, path: string) {
+    return this.o.rich.request<{ ok: boolean; dirs: string[]; reason?: string }>(id, 'add_dir', { path });
+  }
+
   richQueue(id: string, uuid: string, action: 'edit' | 'remove' | 'sendNow', text?: string): Promise<{ ok: boolean; reason?: string }> {
     return this.o.rich.request<{ ok: boolean; reason?: string }>(id, `queue_${action}`, { uuid, text });
   }
@@ -415,6 +436,71 @@ export class JarvisService extends EventEmitter {
     const { sessionId } = await this.o.rich.request<{ sessionId: string }>(id, 'fork', { upToMessageId, title: undefined }, 120_000);
     log(`rich ${id}: rewound by forking ${this.row(id).agent_session_id} -> ${sessionId}`);
     return this.richResume(id, sessionId);
+  }
+
+  /** /branch: fork the conversation where it stands and carry on in the fork. The original stays in /resume. */
+  async richBranch(id: string, name?: string): Promise<SessionInfo> {
+    const r = this.row(id);
+    const { sessionId } = await this.o.rich.request<{ sessionId: string }>(id, 'fork', { title: name?.trim() || undefined }, 120_000);
+    log(`rich ${id}: branched ${r.agent_session_id} -> ${sessionId}`);
+    const info = await this.richResume(id, sessionId);
+    if (name?.trim()) this.rename(id, name);
+    return info;
+  }
+
+  /** /fork: a copy of the conversation in a new rich session, started on a prompt if given, while this one carries on. */
+  async richFork(id: string, prompt?: string): Promise<SessionInfo> {
+    const r = this.row(id);
+    if (r.mode !== 'rich') throw new Error('fork from a rich session');
+    const { sessionId } = await this.o.rich.request<{ sessionId: string }>(id, 'fork', {}, 120_000);
+    const newId = shortId();
+    const row: SessionRow = {
+      ...r, id: newId, tmux_name: `r-${newId}`, name: `${r.name} (fork)`, name_locked: 1, agent_session_id: sessionId, hidden: 0,
+      status: 'running', created_at: Date.now(), exited_at: null, sort_order: this.o.db.nextOrder(),
+    };
+    await this.startRich(row, true);
+    this.o.db.insertSession(row);
+    this.o.observers.setCwd(newId, row.cwd);
+    log(`rich ${id}: forked into ${newId} (${sessionId})`);
+    if (prompt?.trim()) this.o.rich.send(newId, prompt.trim());
+    await this.poll();
+    return this.toInfo(this.row(newId));
+  }
+
+  /** /cd: the same conversation in another directory. Claude files a conversation under its directory, so it moves too. */
+  async richCd(id: string, path: string): Promise<SessionInfo> {
+    const r = this.row(id);
+    if (r.mode !== 'rich' || !r.agent_session_id) throw new Error('/cd is for rich sessions');
+    const dir = resolve(r.cwd, path.trim().replace(/^~(?=$|\/)/, homedir()));
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`${dir} is not a directory`);
+    const claudeHome = process.env.JARVIS_CLAUDE_HOME || join(homedir(), '.claude');
+    const from = findTranscript(r.agent_session_id, claudeHome);
+    await this.o.rich.stop(id);
+    if (from) {
+      const toDir = join(claudeHome, 'projects', realpathSync(dir).replace(/[^a-zA-Z0-9]/g, '-'));
+      mkdirSync(toDir, { recursive: true });
+      const to = join(toDir, `${r.agent_session_id}.jsonl`);
+      if (to !== from) {
+        renameSync(from, to);
+        const side = from.replace(/\.jsonl$/, '');
+        if (existsSync(side)) {
+          cpSync(side, to.replace(/\.jsonl$/, ''), { recursive: true });
+          rmSync(side, { recursive: true, force: true });
+        }
+      }
+    }
+    const loc = await locate(dir);
+    this.o.db.updateSession(id, { cwd: dir, repo_root: loc.repoRoot, worktree: loc.worktree, status: 'running', exited_at: null });
+    this.o.observers.setCwd(id, dir);
+    this.o.observers.forget(id);
+    await this.startRich(this.row(id), true);
+    log(`rich ${id}: moved to ${dir}`);
+    await this.poll();
+    return this.toInfo(this.row(id));
+  }
+
+  richHooks(id: string) {
+    return { sources: readHooks(this.row(id).cwd) };
   }
 
   richBackground(id: string): Promise<{ backgrounded: boolean }> {

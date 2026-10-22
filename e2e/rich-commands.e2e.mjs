@@ -241,7 +241,7 @@ try {
 
   // 7. A screen-only command opens the same conversation in Claude Code, with the command typed.
   await soft('a screen-only command reopens the conversation in a terminal and runs there', async () => {
-    await send('/release-notes');
+    await send('/powerup');
     const x = await waitFor(async () => {
       const y = await sess(s.id);
       return y.mode === 'terminal' && y.status === 'running' ? y : null;
@@ -254,7 +254,7 @@ try {
         execFileSync('tmux', ['-L', SOCKET, 'send-keys', '-t', `=${x.tmuxName}:`, 'Enter']);
         return null;
       }
-      return /release-notes|Version \d|What's new|release notes/i.test(out) ? out : null;
+      return /powerup|power-up|lesson/i.test(out) ? out : null;
     }, 'command output in Claude Code', 60_000, 800).catch((e) => {
       const out = execFileSync('tmux', ['-L', SOCKET, 'capture-pane', '-p', '-J', '-S', '-60', '-t', `=${x.tmuxName}:`], { encoding: 'utf8' });
       console.log('---- terminal screen ----\n' + out.split('\n').filter((l) => l.trim()).slice(-25).join('\n') + '\n----');

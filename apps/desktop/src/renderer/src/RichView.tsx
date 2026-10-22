@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { RichContext, RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion, SessionInfo } from '@jarvis/protocol';
+import type { RichContext, RichConversation, RichEnvelope, RichEvent, RichInfo, RichMcpServer, RichQuestion, SessionInfo } from '@jarvis/protocol';
 import { ago, isLocalUrl, openInViewer, openPreview, rpc, sessionRoot, setState, useStore } from './store';
 import { Prose } from './ProseView';
 import { ContextPanel } from './ContextPanel';
@@ -7,10 +7,12 @@ import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
 import { resolveLocalHref, toolLine } from './toolText';
 import { DENSITIES } from '../../shared/themes';
-import { AgentCard, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, isAgentTool, taskByTool } from './RichParts';
+import { AgentCard, BtwCard, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, fmtDuration, isAgentTool, taskByTool } from './RichParts';
 import {
-  EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, commandCatalog, matchCommands, parseCommand, type Command,
+  EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, canonicalName, commandCatalog, matchCommands, parseCommand, type Command,
 } from './richCommands';
+import { THEMES } from '../../shared/themes';
+import { setAppearance } from './actions';
 
 function onPlan(src: string | null): boolean {
   return src === 'none' || src === 'oauth' || src === '/login managed key';
@@ -308,7 +310,11 @@ function workRuns(
 
 type PickerState = { title: string; items: PickItem[] | null; onPick?: (it: PickItem) => void; empty?: string } | null;
 
-const KIND_BADGE: Record<Command['kind'], string | undefined> = { sdk: undefined, jarvis: 'Jarvis', terminal: 'opens terminal' };
+const ACCENTS: Record<string, string> = {
+  red: '#e5484d', blue: '#3e8ef7', green: '#30a46c', yellow: '#e5b800', purple: '#8e4ec6', orange: '#f76b15', pink: '#d6409f', cyan: '#12a594',
+};
+
+const KIND_BADGE: Record<Command['kind'], string | undefined> = { sdk: undefined, jarvis: 'Jarvis', terminal: 'opens terminal', link: 'opens page', note: 'info' };
 
 /**
  * A rich session, drawn by Jarvis from SDK events. The conversation lives in the session's host process and
@@ -320,6 +326,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   const [draft, setDraft] = useState('');
   const [info, setInfo] = useState<RichInfo | null>(null);
   const [picker, setPicker] = useState<PickerState>(null);
+  const [accent, setAccent] = useState(() => { try { return localStorage.getItem(`jarvis.rv.accent.${session.id}`) ?? ''; } catch { return ''; } });
   const [context, setContext] = useState<RichContext | 'loading' | null>(null);
   const [paletteSel, setPaletteSel] = useState(0);
   const [paletteHidden, setPaletteHidden] = useState(false);
@@ -418,11 +425,12 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     return () => window.removeEventListener('jarvis:quote', onQuote);
   }, [session.id]);
 
-  const { ends, resolved, answersById, lastReply, status } = useMemo(() => {
+  const { ends, resolved, answersById, lastReply, replies, status } = useMemo(() => {
     const ends = new Map<string, Ev<'tool_end'>>();
     const resolved = new Map<string, 'allow' | 'deny'>();
     const answersById = new Map<string, Record<string, string | string[]>>();
     let lastReply = '';
+    const replies: string[] = [];
     let status: Ev<'status'> | null = null;
     let turnText: string[] = [];
     for (const { event: e } of events) {
@@ -436,9 +444,13 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       else if (e.kind === 'text' && !e.parentToolUseId) {
         turnText.push(e.text);
         lastReply = turnText.join('\n\n');
+      } else if (e.kind === 'turn_end' && turnText.length) {
+        replies.push(turnText.join('\n\n'));
+        turnText = [];
       }
     }
-    return { ends, resolved, answersById, lastReply, status };
+    if (turnText.length) replies.push(turnText.join('\n\n'));
+    return { ends, resolved, answersById, lastReply, replies, status };
   }, [events]);
 
   const density = useStore((s) => s.richDensity);
@@ -452,6 +464,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     const notices = new Map<number, Ev<'task_notice'>[]>();
     const reports = new Map<string, Ev<'task_notice'>>();
     let group: { seq: number; taskId: string; list: Ev<'task_notice'>[] } | null = null;
+    const btw = new Map<string, Ev<'btw'>>();
     const toolOfTask = new Map<string, string>();
     for (const { event: e } of events) {
       if (e.kind === 'task' && e.toolUseId) toolOfTask.set(e.taskId, e.toolUseId);
@@ -470,6 +483,12 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         const list = kids.get(e.parentToolUseId) ?? [];
         list.push(env);
         kids.set(e.parentToolUseId, list);
+        continue;
+      }
+      if (e.kind === 'btw') {
+        // One card per question: it sits where the question was asked and shows the latest state.
+        if (btw.has(e.id)) hidden.add(env.seq);
+        btw.set(e.id, e);
         continue;
       }
       if (e.kind === 'task' || e.kind === 'context') continue; // not drawn, so they don't separate a run of reports
@@ -495,12 +514,23 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       if (e.kind === 'compacting') lastCompacting = env.seq;
       else if (e.kind === 'compact') lastCompact = env.seq;
     }
-    return { kids, hidden, notices, reports, compactingSeq: lastCompacting > lastCompact ? lastCompacting : -1, tasks: taskByTool(events) };
+    return { kids, hidden, notices, reports, btw, compactingSeq: lastCompacting > lastCompact ? lastCompacting : -1, tasks: taskByTool(events) };
+  }, [events]);
+
+  // Background commands and sub-agents, latest state per task, for /tasks.
+  const taskStates = useMemo(() => {
+    const m = new Map<string, Ev<'task'>>();
+    for (const { event: e } of events) {
+      if (e.kind !== 'task') continue;
+      const prev = m.get(e.taskId);
+      m.set(e.taskId, prev ? { ...prev, ...e, description: e.description ?? prev.description, agentType: e.agentType ?? prev.agentType, tools: e.tools ?? prev.tools, durationMs: e.durationMs ?? prev.durationMs, progress: e.progress ?? prev.progress } : e);
+    }
+    return m;
   }, [events]);
 
   const catalog = useMemo(() => commandCatalog(info), [info]);
   const paletteQuery = /^\/([\w:.@-]*)$/.exec(draft)?.[1];
-  const palette = paletteQuery !== undefined && !paletteHidden && !picker ? matchCommands(catalog, paletteQuery).slice(0, 60) : null;
+  const palette = paletteQuery !== undefined && !paletteHidden && !picker ? matchCommands(catalog, paletteQuery).slice(0, 400) : null;
   useEffect(() => setPaletteSel(0), [paletteQuery]);
   useEffect(() => {
     if (!draft.startsWith('/')) setPaletteHidden(false);
@@ -525,11 +555,169 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
 
   /** Run a slash command the way richCommands.ts says it runs. */
   const runCommand = async (text: string): Promise<void> => {
-    const cmd = parseCommand(text)!;
+    const parsed = parseCommand(text)!;
+    const cmd = { ...parsed, name: canonicalName(parsed.name) };
     const known = catalog.find((c) => c.name === cmd.name);
+    const fail = (e: unknown) => setNote(e instanceof Error ? e.message.replace(/^Error: /, '') : String(e));
     const pickAndSend = (title: string, items: PickItem[], build: (it: PickItem) => string) =>
       setPicker({ title, items, onPick: (it) => { setPicker(null); void sendText(build(it)); } });
     switch (known?.kind === 'jarvis' ? cmd.name : '') {
+      case 'plan':
+        await rpc('rich.setPermissionMode', { id: session.id, mode: 'plan' }).catch(fail);
+        setNote('Plan mode on: Claude reads and plans, and changes nothing until you approve');
+        if (cmd.args) await sendText(cmd.args);
+        return;
+      case 'btw':
+        if (!cmd.args) return setNote('Ask a side question: /btw <question>. It is answered from this conversation and not added to it.');
+        stick.current = true;
+        await rpc('rich.btw', { id: session.id, question: cmd.args }).catch(fail);
+        return;
+      case 'add-dir': {
+        if (!cmd.args) return setNote('Usage: /add-dir <path>');
+        const r = await rpc<{ ok: boolean; dirs: string[]; reason?: string }>('rich.addDir', { id: session.id, path: cmd.args }).catch((e) => ({ ok: false, dirs: [] as string[], reason: String(e) }));
+        setNote(r.ok ? `Claude can now work in ${r.dirs.at(-1)!.replace(window.jarvis.homeDir, '~')}` : (r.reason ?? 'Could not add that directory'));
+        return;
+      }
+      case 'cd': {
+        if (!cmd.args) return setNote('Usage: /cd <path>');
+        await rpc('rich.cd', { id: session.id, path: cmd.args }).then(() => setNote(`Moved to ${cmd.args}`)).catch(fail);
+        return;
+      }
+      case 'branch':
+        await rpc('rich.branch', { id: session.id, name: cmd.args || undefined })
+          .then(() => setNote('Continuing in a new branch of the conversation. The original is in /resume.')).catch(fail);
+        return;
+      case 'fork':
+        await rpc<SessionInfo>('rich.fork', { id: session.id, prompt: cmd.args || undefined })
+          .then((s) => setNote(`Forked into "${s.name}" (in the sidebar). This one carries on.`)).catch(fail);
+        return;
+      case 'subtask':
+        if (!cmd.args) return setNote('Usage: /subtask <task>');
+        await sendText(`Start a background subagent (the Agent tool with run_in_background true) that carries on from this conversation and does the following while we keep working. Report back when it is done.\n\n${cmd.args}`);
+        return;
+      case 'diff':
+        setState({ navOpen: true, navTab: 'changes' });
+        return;
+      case 'tasks': {
+        const rows = [...taskStates.values()].reverse();
+        setPicker({
+          title: 'Background work: pick a running one to stop it', empty: 'Nothing is running in the background.',
+          items: rows.map((t): PickItem => ({
+            key: t.taskId, label: t.description || t.progress || t.taskId,
+            badge: t.state === 'running' ? 'running' : t.state, detail: [t.agentType, t.tools != null ? `${t.tools} tool calls` : null, t.durationMs ? fmtDuration(t.durationMs) : null].filter(Boolean).join(' · '),
+          })),
+          onPick: async (it) => {
+            setPicker(null);
+            const t = taskStates.get(it.key);
+            if (!t || t.state !== 'running') return;
+            if (await window.jarvis.confirm(`Stop “${it.label.slice(0, 60)}”?`, 'The task is stopped; Claude is told it was stopped.', 'Stop it')) {
+              await rpc('rich.stopTask', { id: session.id, taskId: t.taskId }).catch(fail);
+            }
+          },
+        });
+        return;
+      }
+      case 'mcp': {
+        const [verb, ...rest] = cmd.args.split(/\s+/).filter(Boolean);
+        const target = rest.join(' ');
+        const call = (action: 'status' | 'reconnect' | 'toggle', name?: string, enabled?: boolean) =>
+          rpc<{ servers: RichMcpServer[] }>('rich.mcp', { id: session.id, action, name, enabled });
+        if (verb && /^(reconnect|enable|disable)$/.test(verb) && target) {
+          const names = target === 'all' ? (await call('status').catch(() => ({ servers: [] as RichMcpServer[] }))).servers.map((x) => x.name) : [target];
+          for (const n of names) await (verb === 'reconnect' ? call('reconnect', n) : call('toggle', n, verb === 'enable')).catch(fail);
+          setNote(`${verb === 'reconnect' ? 'Reconnected' : verb === 'enable' ? 'Enabled' : 'Disabled'} ${target}`);
+          return;
+        }
+        const show = async (servers: RichMcpServer[]) => setPicker({
+          title: `MCP servers: ${servers.filter((x) => x.status === 'connected').length} connected of ${servers.length}. Pick one to reconnect or turn it on or off`,
+          empty: 'No MCP servers configured.',
+          items: servers.map((x): PickItem => ({
+            key: x.name, label: x.name, badge: x.status,
+            detail: [x.tools != null ? `${x.tools} tools` : null, x.scope, x.version && `v${x.version}`, x.error].filter(Boolean).join(' · '),
+          })),
+          onPick: (it) => {
+            const srv = servers.find((x) => x.name === it.key)!;
+            setPicker({
+              title: srv.name,
+              items: [
+                { key: 'reconnect', label: 'Reconnect', detail: 'Drop the connection and connect again' },
+                srv.status === 'disabled' ? { key: 'enable', label: 'Enable' } : { key: 'disable', label: 'Disable', detail: 'Its tools are no longer available to Claude' },
+              ],
+              onPick: async (act) => {
+                setPicker({ title: srv.name, items: null });
+                const r = await (act.key === 'reconnect' ? call('reconnect', srv.name) : call('toggle', srv.name, act.key === 'enable')).catch((e) => { fail(e); return null; });
+                if (r) await show(r.servers);
+                else setPicker(null);
+              },
+            });
+          },
+        });
+        setPicker({ title: 'MCP servers', items: null });
+        const r = await call('status').catch((e) => { fail(e); return null; });
+        if (r) await show(r.servers);
+        else setPicker(null);
+        return;
+      }
+      case 'hooks': {
+        setPicker({ title: 'Hooks', items: null });
+        const r = await rpc<{ sources: { file: string; hooks: { event: string; matcher: string; command: string }[] }[] }>('rich.hooks', { id: session.id }).catch(() => ({ sources: [] }));
+        setPicker({
+          title: 'Hooks in your settings files (plugin hooks are not listed)', empty: 'No hooks in user, project or local settings.',
+          items: r.sources.flatMap((src) => src.hooks.map((h, i): PickItem => ({ key: `${src.file}${i}`, label: `${h.event}  ${h.matcher}`, detail: `${h.command.replace(/\s+/g, ' ').slice(0, 140)}  ·  ${src.file}` }))),
+        });
+        return;
+      }
+      case 'agents': {
+        setPicker({ title: 'Subagents', items: null });
+        const r = await rpc<{ agents: { name: string; description: string; model: string | null }[] }>('rich.agents', { id: session.id }).catch(() => ({ agents: [] }));
+        setPicker({
+          title: 'Subagents Claude can use. Ask Claude to create or change them.', empty: 'No subagents.',
+          items: r.agents.map((a): PickItem => ({ key: a.name, label: a.name, badge: a.model ?? undefined, detail: a.description.replace(/\s+/g, ' ').slice(0, 160) })),
+        });
+        return;
+      }
+      case 'skills': {
+        const skills = catalog.filter((c) => c.kind === 'sdk');
+        setPicker({
+          title: 'Skills and commands from Claude Code. Pick one to put it in the composer.', empty: 'None.',
+          items: skills.map((c): PickItem => ({ key: c.name, label: `/${c.name}`, detail: c.description.replace(/\s+/g, ' ').slice(0, 150) })),
+          onPick: (it) => { setPicker(null); setDraft(`${it.label} `); requestAnimationFrame(() => input.current?.focus()); },
+        });
+        return;
+      }
+      case 'rename':
+        await rpc('sessions.rename', { id: session.id, name: cmd.args }).catch(fail);
+        setNote(cmd.args ? `Renamed to “${cmd.args}”` : 'The name follows Claude’s title again');
+        return;
+      case 'color': {
+        const want = cmd.args.toLowerCase();
+        if (want && want !== 'default' && !ACCENTS[want]) return setNote(`Colors: ${Object.keys(ACCENTS).join(', ')}, default`);
+        const next = want === 'default' ? '' : want;
+        setAccent(next);
+        try { localStorage.setItem(`jarvis.rv.accent.${session.id}`, next); } catch { /* private window */ }
+        setNote(next ? `Accent: ${next}` : 'Accent reset');
+        return;
+      }
+      case 'theme':
+        setPicker({
+          title: 'Theme', items: THEMES.map((t): PickItem => ({ key: t.id, label: t.label, detail: t.kind, current: document.documentElement.dataset.theme === t.id })),
+          onPick: (it) => { setPicker(null); setAppearance({ theme: it.key }); },
+        });
+        return;
+      case 'focus':
+        setDensity(density === 'focus' ? 'normal' : 'focus');
+        setNote(density === 'focus' ? 'Thinking shown again' : 'Focus: thinking hidden');
+        return;
+      case 'keybindings': {
+        const path = `${window.jarvis.homeDir}/.claude/keybindings.json`;
+        const exists = await rpc<{ text?: string }>('files.read', { path }).then(() => true).catch(() => false);
+        if (exists) openInViewer({ path, root: null, mode: 'file' });
+        else setNote('No ~/.claude/keybindings.json yet. Ask Claude to create one (see /help for the format).');
+        return;
+      }
+      case 'stop':
+        await rpc('rich.interrupt', { id: session.id }).catch(fail);
+        return;
       case 'resume': {
         setPicker({ title: 'Resume a conversation in this directory', items: null, empty: 'No saved conversations here yet.' });
         const list = await rpc<RichConversation[]>('rich.conversations', { id: session.id }).catch(() => [] as RichConversation[]);
@@ -591,13 +779,16 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         setPicker({ title: 'Status', items: rows.filter(([, v]) => v).map(([k, v]) => ({ key: k, label: k, detail: v! })) });
         return;
       }
-      case 'copy':
-        if (!lastReply) setNote('Nothing to copy yet');
+      case 'copy': {
+        const n = Math.max(1, parseInt(cmd.args, 10) || 1);
+        const pick = replies[replies.length - n];
+        if (!pick) setNote('Nothing to copy yet');
         else {
-          window.jarvis.copyText(lastReply);
-          setNote("Copied Claude's last reply");
+          window.jarvis.copyText(pick);
+          setNote(n === 1 ? "Copied Claude's last reply" : `Copied Claude's reply ${n} back`);
         }
         return;
+      }
       case 'export': {
         const r = await rpc<{ path: string }>('rich.export', { id: session.id }).catch(() => null);
         if (r) {
@@ -620,6 +811,15 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       default:
         break;
     }
+    if (known?.route.kind === 'link') {
+      window.jarvis.openExternal(known.route.url);
+      setNote(`Opened ${known.route.url.replace(/^https:\/\//, '')}`);
+      return;
+    }
+    if (known?.route.kind === 'note') {
+      setNote(known.route.text);
+      return;
+    }
     if (known?.kind === 'terminal') {
       // This swaps the session to Claude Code's own screen; ask first, and say what it does.
       const ok = await window.jarvis.confirm(
@@ -640,7 +840,8 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       if (cmd.name === 'effort') return pickAndSend('Effort', EFFORT_LEVELS.map((e) => ({ key: e.value, label: e.value, detail: e.detail })), (it) => `/effort ${it.key}`);
       if (cmd.name === 'output-style') return pickAndSend('Output style', (info?.outputStyles ?? []).map((s) => ({ key: s, label: s })), (it) => `/output-style ${it.key}`);
     }
-    await sendText(text.trim());
+    // An alias of a command Claude Code runs is sent under the name it knows (/stats → /usage, /review → /code-review).
+    await sendText(parsed.name !== cmd.name ? `/${cmd.name}${cmd.args ? ` ${cmd.args}` : ''}` : text.trim());
   };
 
   const submit = async () => {
@@ -847,6 +1048,12 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           </div>
         );
       }
+      case 'local_output':
+        return <pre key={key} className="rv-local-out">{e.text}</pre>;
+      case 'btw': {
+        const latest = structure.btw.get(e.id);
+        return latest ? <BtwCard key={key} e={latest} /> : null;
+      }
       case 'compact':
         return <CompactMarker key={key} e={e} />;
       case 'compact_summary':
@@ -873,7 +1080,8 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, density, ends, resolved, answersById, thinking, structure, status, connected, session.cwd, session.id, queuedText, foldedMid]);
   return (
-    <div className="rich-wrap" style={{ display: visible ? 'flex' : 'none' }} onMouseDown={() => picker && setPicker(null)}
+    <div className="rich-wrap" data-accent={accent || undefined}
+      style={{ display: visible ? 'flex' : 'none', ...(accent && ACCENTS[accent] ? { ['--rv-accent' as string]: ACCENTS[accent] } : {}) }} onMouseDown={() => picker && setPicker(null)}
       onKeyDown={(e) => {
         if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b' && working) {
           e.preventDefault();

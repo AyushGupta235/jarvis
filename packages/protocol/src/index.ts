@@ -50,7 +50,7 @@ export type SessionMode = 'terminal' | 'rich';
  * Bumped whenever the rich session host (packages/daemon/src/agent-host.ts) gains something the app relies on.
  * Hosts outlive app updates, so a session whose host reports an older number is offered a restart.
  */
-export const RICH_HOST_PROTOCOL = 4;
+export const RICH_HOST_PROTOCOL = 5;
 
 export interface SessionInfo {
   /** Stable short id. External sessions use `ext:<tmux name>`. */
@@ -351,11 +351,15 @@ export type RichEvent =
   | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null; stopped?: boolean }
   /** Claude is summarising the conversation to free context. Ends with the `compact` that follows. */
   | { kind: 'compacting' }
+  /** What a slash command that Claude Code ran itself printed (shown when replaying history). */
+  | { kind: 'local_output'; text: string }
   /** Plan rate limits, as the SDK reports them each turn (resetsAt in epoch ms, `at` is when it was read). */
   | { kind: 'limits'; at: number; fiveHour: { usedPct: number; resetsAt: number | null } | null; sevenDay: { usedPct: number; resetsAt: number | null } | null }
   | { kind: 'compact'; trigger?: 'manual' | 'auto'; preTokens?: number; postTokens?: number; durationMs?: number; error?: string }
   /** The summary Claude carries forward after a compaction. */
   | { kind: 'compact_summary'; text: string }
+  /** A /btw side question: answered from the conversation without becoming part of it. `answer` is null while it runs. */
+  | { kind: 'btw'; id: string; question: string; answer: string | null; error?: string }
   /** Progress of a sub-agent or background command, keyed by the tool call that started it. */
   | {
     kind: 'task'; taskId: string; toolUseId: string | null; state: 'running' | 'done' | 'failed' | 'stopped';
@@ -367,6 +371,15 @@ export type RichEvent =
   | { kind: 'resumed'; messages: number; shown?: number }
   | { kind: 'error'; message: string }
   | { kind: 'ended'; reason: string };
+
+export interface RichMcpServer {
+  name: string;
+  status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled';
+  tools: number | null;
+  error: string | null;
+  scope: string | null;
+  version: string | null;
+}
 
 /** What a running rich session can do, for the / palette and the native pickers. */
 export interface RichInfo {
@@ -513,6 +526,24 @@ export interface RpcMethods {
   /** A message held in the queue: change its text, drop it, or hand it to Claude now (which stops the current turn). */
   'rich.queue': [{ id: string; uuid: string; action: 'edit' | 'remove' | 'sendNow'; text?: string }, { ok: boolean; reason?: string }];
   'rich.respond': [{ id: string; requestId: string; behavior: 'allow' | 'deny'; message?: string }, { ok: true }];
+  /** /btw: ask a side question about the conversation without adding to it; the answer arrives as a `btw` event. */
+  'rich.btw': [{ id: string; question: string }, { id: string }];
+  /** /mcp: the session's MCP servers, and reconnect or enable/disable one. */
+  'rich.mcp': [{ id: string; action: 'status' | 'reconnect' | 'toggle'; name?: string; enabled?: boolean }, { servers: RichMcpServer[] }];
+  /** /agents: the subagents Claude can use. */
+  'rich.agents': [{ id: string }, { agents: { name: string; description: string; model: string | null }[] }];
+  /** /tasks: stop a background task or sub-agent. */
+  'rich.stopTask': [{ id: string; taskId: string }, { ok: boolean }];
+  /** /add-dir: let Claude work in another directory. */
+  'rich.addDir': [{ id: string; path: string }, { ok: boolean; dirs: string[]; reason?: string }];
+  /** /branch: fork the conversation at its current end and continue in the fork. */
+  'rich.branch': [{ id: string; name?: string }, SessionInfo];
+  /** /fork: copy the conversation into a new rich session (optionally starting it on a prompt) and stay here. */
+  'rich.fork': [{ id: string; prompt?: string }, SessionInfo];
+  /** /cd: move the session to another directory, keeping the conversation. */
+  'rich.cd': [{ id: string; path: string }, SessionInfo];
+  /** /hooks: the hooks configured for this session's directory, by settings file. */
+  'rich.hooks': [{ id: string }, { sources: { file: string; hooks: { event: string; matcher: string; command: string }[] }[] }];
   /** Ctrl+B: move running tool calls (long Bash commands) to the background so the turn continues. */
   'rich.background': [{ id: string }, { backgrounded: boolean }];
   'rich.answer': [{ id: string; requestId: string; answers: Record<string, string | string[]> }, { ok: true }];

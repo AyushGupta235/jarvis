@@ -910,3 +910,19 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 /* API errors are the connection failing, not Claude talking */
 .rv-apierr { margin: 8px 0; padding: 6px 10px; border-radius: 8px; border: 1px solid rgb(var(--love-rgb) / 0.35); background: rgb(var(--love-rgb) / 0.07); color: var(--love); font-size: 12px; }
 .rv-apierr::before { content: 'API error  '; font-weight: 650; letter-spacing: 0.02em; }
+
+/* /btw side questions */
+.rv-btw { margin: 10px 0; padding: 8px 12px; border-radius: 10px; border: 1px dashed rgb(var(--text-rgb) / 0.22); background: rgb(var(--text-rgb) / 0.025); }
+.rv-btw-head { display: flex; align-items: baseline; gap: 8px; font-size: 12px; min-width: 0; }
+.rv-btw-tag { flex: none; font-family: var(--mono); font-size: 11px; color: var(--subtle); padding: 0 6px; border-radius: 4px; background: rgb(var(--text-rgb) / 0.07); }
+.rv-btw-q { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); }
+.rv-btw-note { flex: none; font-size: 10.5px; color: var(--muted); }
+.rv-btw-a { margin: 6px 0 0; font-size: 13px; }
+.rv-btw-a.err { color: var(--love); }
+/* /color */
+.rich-wrap[data-accent] .rv-input { border-color: var(--rv-accent); box-shadow: 0 0 0 1px var(--rv-accent) inset; }
+.rich-wrap[data-accent] .rv-caret { color: var(--rv-accent); }
+.rv-cmd-badge.link, .rv-cmd-badge.note { background: rgb(var(--text-rgb) / 0.08); color: var(--subtle); }
+
+/* Output of a slash command Claude Code ran (history) */
+.rv-local-out { margin: 4px 0 10px; padding: 6px 10px; border-radius: 8px; background: rgb(var(--text-rgb) / 0.03); border: 1px solid rgb(var(--text-rgb) / 0.06); color: var(--text-soft); font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }

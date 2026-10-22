@@ -13,12 +13,13 @@ import { forkSession, listSessions, query, type PermissionResult, type Query, ty
 import { randomUUID } from 'node:crypto';
 import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
 import { readChain, type Chain } from './transcript';
-import { COMPACT_SUMMARY_PREFIX, parseAgentMessage, parseTaskNotification, userText } from './notices';
+import { COMPACT_SUMMARY_PREFIX, parseAgentMessage, parseLocalCommand, parseTaskNotification, userText } from './notices';
 import { findTranscript } from './thinking';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
-import { dirname } from 'node:path';
-import type { RichContext, RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion } from '@jarvis/protocol';
+import { homedir } from 'node:os';
+import { dirname, resolve } from 'node:path';
+import type { RichContext, RichConversation, RichEnvelope, RichEvent, RichInfo, RichMcpServer, RichQuestion } from '@jarvis/protocol';
 import type { RichHostConfig, RichHostMeta } from '@jarvis/protocol/node';
 
 const cfg = JSON.parse(process.env.JARVIS_HOST_CONFIG ?? 'null') as RichHostConfig | null;
@@ -82,6 +83,12 @@ function fromMessage(role: 'user' | 'assistant', message: any, parentToolUseId: 
       // Live, the SDK already told us this with a structured message (see announced); don't show it twice.
       if (!replay && announced.has(`${notice.taskId}:${notice.status}`)) return;
       push(notice, replay);
+      return;
+    }
+    const local = replay && text ? parseLocalCommand(text) : null;
+    if (local) {
+      if (local.kind === 'command') push({ kind: 'user', text: local.text }, true);
+      else if (local.text) push({ kind: 'local_output', text: local.text }, true);
       return;
     }
     if (text?.startsWith(COMPACT_SUMMARY_PREFIX)) {
@@ -467,6 +474,11 @@ function handle(c: Socket, line: string): void {
     case 'context':
     case 'rewind_points':
     case 'fork':
+    case 'btw':
+    case 'mcp':
+    case 'agents':
+    case 'stop_task':
+    case 'add_dir':
     case 'conversations':
     case 'set_mode':
     case 'background':
@@ -476,6 +488,34 @@ function handle(c: Socket, line: string): void {
       return;
     default:
       return;
+  }
+}
+
+/** Directories added with /add-dir for this host's lifetime. */
+const addedDirs = new Set<string>();
+
+/**
+ * /btw: answer a question from the conversation so far without adding to it. A throwaway fork of the conversation
+ * answers with no tools and writes no transcript, so the real conversation is untouched.
+ */
+async function sideQuestion(id: string, question: string): Promise<void> {
+  try {
+    let answer = '';
+    for await (const m of query({
+      prompt: `A side question about our conversation. Answer it briefly from what we have discussed. Do not use tools.\n\n${question}`,
+      options: {
+        cwd: cfg!.cwd, resume: currentSessionId, forkSession: true, persistSession: false, maxTurns: 1,
+        ...(info.model ? { model: info.model } : {}),
+        disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'NotebookEdit', 'Agent', 'Task', 'Grep', 'Glob', 'WebFetch', 'WebSearch'],
+        ...(cfg!.claudePath ? { pathToClaudeCodeExecutable: cfg!.claudePath } : {}),
+        env: { ...process.env },
+      },
+    })) {
+      if (m.type === 'result') answer = m.subtype === 'success' ? m.result : '';
+    }
+    push({ kind: 'btw', id, question, answer: answer.trim() || '(no answer)' });
+  } catch (e) {
+    push({ kind: 'btw', id, question, answer: null, error: (e as Error).message });
   }
 }
 
@@ -546,8 +586,46 @@ async function request(op: string, msg: any): Promise<unknown> {
     }
     case 'fork': {
       // Copy the conversation up to (and including) one message into a new conversation; the original stays as it is.
-      const r = await forkSession(currentSessionId, { dir: cfg!.cwd, upToMessageId: String(msg.upToMessageId), title: msg.title ? String(msg.title) : undefined });
+      const r = await forkSession(currentSessionId, {
+        dir: cfg!.cwd, ...(msg.upToMessageId ? { upToMessageId: String(msg.upToMessageId) } : {}), title: msg.title ? String(msg.title) : undefined,
+      });
       return { sessionId: r.sessionId };
+    }
+    case 'btw': {
+      const question = String(msg.question ?? '').trim();
+      if (!question) throw new Error('ask something: /btw <question>');
+      const id = randomUUID();
+      push({ kind: 'btw', id, question, answer: null });
+      void sideQuestion(id, question);
+      return { id };
+    }
+    case 'mcp': {
+      if (!q) throw new Error('the session has not started yet');
+      if (msg.action === 'reconnect' && msg.name) await q.reconnectMcpServer(String(msg.name));
+      else if (msg.action === 'toggle' && msg.name) await q.toggleMcpServer(String(msg.name), !!msg.enabled);
+      const list = await q.mcpServerStatus();
+      return {
+        servers: list.map((x): RichMcpServer => ({
+          name: x.name, status: x.status, tools: x.tools?.length ?? null, error: x.error ?? null, scope: x.scope ?? x.source ?? null,
+          version: x.serverInfo?.version ?? null,
+        })),
+      };
+    }
+    case 'agents': {
+      if (!q) throw new Error('the session has not started yet');
+      return { agents: (await q.supportedAgents()).map((a) => ({ name: a.name, description: a.description, model: a.model ?? null })) };
+    }
+    case 'stop_task':
+      if (!q) throw new Error('the session has not started yet');
+      await q.stopTask(String(msg.taskId));
+      return { ok: true };
+    case 'add_dir': {
+      if (!q) throw new Error('the session has not started yet');
+      const dir = resolve(cfg!.cwd, String(msg.path ?? '').replace(/^~(?=$|\/)/, homedir()));
+      if (!existsSync(dir) || !statSync(dir).isDirectory()) return { ok: false, dirs: [...addedDirs], reason: `${dir} is not a directory` };
+      addedDirs.add(dir);
+      await q.applyFlagSettings({ permissions: { additionalDirectories: [...addedDirs] } });
+      return { ok: true, dirs: [...addedDirs] };
     }
     case 'background':
       if (!q) throw new Error('the session has not started yet');

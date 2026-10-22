@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentMessage, parseTaskNotification, userText } from '../src/notices';
+import { parseAgentMessage, parseLocalCommand, parseTaskNotification, userText } from '../src/notices';
 
 describe('parseTaskNotification', () => {
   it('turns a finished background command into a notice', () => {
@@ -38,5 +38,16 @@ describe('userText', () => {
     expect(userText('hi')).toBe('hi');
     expect(userText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }])).toBe('a\nb');
     expect(userText([{ type: 'tool_result', content: 'x' }])).toBeNull();
+  });
+});
+
+describe('parseLocalCommand', () => {
+  it('reads a command echo as what you typed, with its arguments', () => {
+    expect(parseLocalCommand('<command-name>/advisor</command-name>\n<command-message>advisor</command-message>\n<command-args>opus</command-args>')).toEqual({ kind: 'command', text: '/advisor opus' });
+    expect(parseLocalCommand('<command-name>/usage</command-name><command-message>usage</command-message><command-args></command-args>')).toEqual({ kind: 'command', text: '/usage' });
+  });
+  it('reads a command\'s output without colour codes', () => {
+    expect(parseLocalCommand('<local-command-stdout>\u001b[1mAdvisor:\u001b[0m off</local-command-stdout>')).toEqual({ kind: 'output', text: 'Advisor: off' });
+    expect(parseLocalCommand('plain text')).toBeNull();
   });
 });

@@ -238,3 +238,19 @@ export function AgentCard({ start, end, kids, ends, task, report, cwd, showThink
     </div>
   );
 }
+
+/** A /btw side question and its answer: shown in the flow where it was asked, but not part of the conversation. */
+export function BtwCard({ e }: { e: Ev<'btw'> }) {
+  return (
+    <div className={`rv-btw${e.error ? ' err' : ''}`}>
+      <div className="rv-btw-head">
+        <span className="rv-btw-tag">/btw</span>
+        <span className="rv-btw-q">{e.question}</span>
+        <span className="rv-btw-note">side question · not added to the conversation</span>
+      </div>
+      {e.error ? <div className="rv-btw-a err">{e.error}</div>
+        : e.answer == null ? <div className="rv-btw-a muted"><span className="rv-dot running">◌</span> Thinking…</div>
+        : <Prose text={e.answer} className="rv-text rv-btw-a" />}
+    </div>
+  );
+}

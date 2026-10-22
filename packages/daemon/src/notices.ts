@@ -49,3 +49,19 @@ export function userText(content: unknown): string | null {
   const t = content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n');
   return t || null;
 }
+
+/**
+ * Slash commands that Claude Code runs itself are stored in the transcript as tagged text: the command and its
+ * arguments, then its output. On replay they should read as what you typed, and what it printed.
+ */
+export function parseLocalCommand(text: string): { kind: 'command' | 'output'; text: string } | null {
+  const t = text.trim();
+  const name = /^<command-name>([\s\S]*?)<\/command-name>/.exec(t);
+  if (name) {
+    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim();
+    return { kind: 'command', text: `${name[1]!.trim()}${args ? ` ${args}` : ''}` };
+  }
+  const out = /^<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/.exec(t);
+  if (out) return { kind: 'output', text: out[1]!.replace(/\u001b\[[0-9;]*m/g, '').trim() };
+  return null;
+}

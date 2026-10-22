@@ -1,46 +1,48 @@
-import { NATIVE_RICH_COMMANDS, SCREEN_ONLY_COMMANDS, type RichInfo } from '@jarvis/protocol';
+import type { RichInfo } from '@jarvis/protocol';
+
+import { BUILTIN_COMMANDS, COMMAND_ALIASES, type Route } from './commandTable';
 
 /**
- * Every slash command a rich session understands, and how it runs:
- * - sdk: sent as the prompt; Claude Code runs it (built-ins, custom commands, skills).
- * - jarvis: the rich view does it itself (/resume, /permissions, /copy...).
+ * Every slash command a rich session understands, and how it runs (commandTable.ts decides, per built-in):
+ * - sdk: sent as the prompt; Claude Code runs it (the commands it supports, custom commands, skills).
+ * - jarvis: the rich view does it itself (/plan, /btw, /mcp, /resume...).
  * - terminal: needs Claude Code's own screen; the conversation reopens there with the command typed.
+ * - link: opens a web page. note: nothing to do here, and the reason is shown.
  */
-export type CommandKind = 'sdk' | 'jarvis' | 'terminal';
+export type CommandKind = Route['kind'];
 
 export interface Command {
   name: string;
   hint: string;
   description: string;
   kind: CommandKind;
+  route: Route;
 }
-
-/** What the screen-only commands do, for the palette (Claude Code doesn't describe them over the SDK). */
-const SCREEN_ONLY_DESC: Record<string, string> = {
-  'add-dir': 'Add a working directory', bashes: 'List background shells', color: 'Set the prompt bar color',
-  doctor: 'Check the Claude Code installation', fast: 'Toggle fast mode (not available through the SDK)',
-  feedback: 'Send feedback to Anthropic', focus: 'Toggle focus view', hooks: 'Manage hooks', ide: 'Connect to an IDE',
-  'install-github-app': 'Set up the Claude GitHub app', keybindings: 'Edit keybindings', login: 'Sign in', logout: 'Sign out',
-  plugin: 'Manage plugins', 'privacy-settings': 'Privacy settings', 'release-notes': 'Release notes',
-  'reload-plugins': 'Activate pending plugin changes', rewind: 'Rewind the conversation and files', sandbox: 'Sandbox settings',
-  statusline: 'Set up the status line', tasks: 'List background tasks', 'terminal-setup': 'Set up terminal key bindings',
-  theme: 'Change the theme', todos: 'Show the todo list', upgrade: 'Upgrade your plan', vim: 'Toggle vim mode',
-};
 
 /** Typed without an argument, these open a picker instead of printing usage. */
 export const PICKER_COMMANDS = new Set(['model', 'effort', 'output-style']);
 
+/** The command an alias means ("/quit" is "/exit"); other names are themselves. */
+export function canonicalName(name: string): string {
+  return COMMAND_ALIASES.get(name) ?? name;
+}
+
 export function commandCatalog(info: RichInfo | null): Command[] {
   const all = new Map<string, Command>();
+  // What Claude Code reports: skills, your own commands, and the built-ins it can run itself.
   for (const c of info?.commands ?? []) {
-    all.set(c.name, { name: c.name, hint: c.argumentHint, description: c.description, kind: 'sdk' });
+    all.set(c.name, { name: c.name, hint: c.argumentHint, description: c.description, kind: 'sdk', route: { kind: 'sdk' } });
   }
-  for (const [name, description] of Object.entries(NATIVE_RICH_COMMANDS)) {
-    all.set(name, { name, hint: name === 'resume' ? '[conversation]' : '', description, kind: 'jarvis' });
+  // Commands only its own screen can run, as it reports them.
+  for (const name of info?.terminalCommands ?? []) {
+    if (!all.has(name)) all.set(name, { name, hint: '', description: 'Runs in Claude Code', kind: 'terminal', route: { kind: 'terminal' } });
   }
-  for (const name of new Set([...SCREEN_ONLY_COMMANDS, ...(info?.terminalCommands ?? [])])) {
-    if (all.get(name)?.kind === 'jarvis') continue;
-    all.set(name, { name, hint: '', description: SCREEN_ONLY_DESC[name] ?? all.get(name)?.description ?? 'Runs in Claude Code', kind: 'terminal' });
+  // The decision for each built-in wins over what the SDK does with the same name.
+  for (const b of BUILTIN_COMMANDS) {
+    const reported = all.get(b.name);
+    const entry = { hint: b.hint ?? reported?.hint ?? '', description: reported?.description || b.description, kind: b.route.kind, route: b.route };
+    all.set(b.name, { name: b.name, ...entry });
+    for (const a of b.aliases ?? []) if (!all.has(a) || all.get(a)!.kind === 'terminal') all.set(a, { name: a, ...entry, description: `${b.description} (same as /${b.name})` });
   }
   return [...all.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
