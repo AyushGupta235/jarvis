@@ -394,6 +394,14 @@ export class JarvisService extends EventEmitter {
     this.o.rich.interrupt(id);
   }
 
+  richShell(id: string, command: string): Promise<{ id: string }> {
+    return this.o.rich.request<{ id: string }>(id, 'shell_run', { command });
+  }
+
+  richShellStop(id: string, shellId: string): Promise<{ ok: boolean }> {
+    return this.o.rich.request<{ ok: boolean }>(id, 'shell_stop', { shellId });
+  }
+
   richBtw(id: string, question: string): Promise<{ id: string }> {
     return this.o.rich.request<{ id: string }>(id, 'btw', { question });
   }

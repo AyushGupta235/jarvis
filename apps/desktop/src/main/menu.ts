@@ -1,8 +1,12 @@
 import { Menu, app, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
 import type { MenuAction } from '../shared/ipc';
 import { DENSITIES, MONO_FONTS, THEMES, UI_FONTS, type AppearanceState } from '../shared/themes';
+import type { Prefs } from './prefs';
 
-export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => void, isDev: boolean, look: AppearanceState): void {
+export function buildMenu(
+  getWin: () => BrowserWindow | null, onMaximize: () => void, isDev: boolean, look: AppearanceState,
+  prefs: Prefs, setPref: (key: keyof Prefs, value: boolean) => void,
+): void {
   const send = (action: MenuAction, arg?: number | string) => () => getWin()?.webContents.send('menu', action, arg);
   const item = (label: string, accelerator: string | undefined, action: MenuAction, arg?: number | string): MenuItemConstructorOptions => ({
     label, accelerator, click: send(action, arg),
@@ -39,6 +43,16 @@ export function buildMenu(getWin: () => BrowserWindow | null, onMaximize: () => 
         item('Quick Switch…', 'CmdOrCtrl+P', 'quick-switch'),
         item('Next Session Needing You', 'CmdOrCtrl+Shift+U', 'next-attention'),
         item('Quote Selection in Reply', "CmdOrCtrl+'", 'quote-reply'),
+        {
+          label: 'Notifications',
+          submenu: [
+            { label: 'Sound when an agent finishes', type: 'checkbox', checked: prefs.soundDone, click: (m) => setPref('soundDone', m.checked) },
+            { label: 'Sound when an agent needs you', type: 'checkbox', checked: prefs.soundNeeds, click: (m) => setPref('soundNeeds', m.checked) },
+            { label: 'Skip the sound for the session I am looking at', type: 'checkbox', checked: prefs.soundOnlyWhenAway, click: (m) => setPref('soundOnlyWhenAway', m.checked) },
+            { type: 'separator' },
+            { label: 'Desktop notification when I am not looking', type: 'checkbox', checked: prefs.notify, click: (m) => setPref('notify', m.checked) },
+          ],
+        },
         { type: 'separator' },
         item('Rename Session…', 'CmdOrCtrl+Shift+R', 'rename-session'),
         item('Hide Session (keeps running)', 'CmdOrCtrl+W', 'hide-session'),

@@ -126,6 +126,8 @@ async function step(name, fn) {
   }
 }
 
+const usedRepos = new Set();
+
 async function createViaUi(app, win, repo, agent, model) {
   if (await win.$('.modal')) await win.keyboard.press('Escape');
   await step('dialog closed', () => win.waitForSelector('.modal', { state: 'detached', timeout: 5000 }));
@@ -135,6 +137,12 @@ async function createViaUi(app, win, repo, agent, model) {
   await step(`agent ${agent}`, () => win.click(`.seg-btn:text-is("${AGENT_LABEL[agent]}")`, { timeout: 5000 }));
   if (agent === 'claude') await step('model', () => win.click(`.seg-btn:text-is("${model[0].toUpperCase()}${model.slice(1)}")`, { timeout: 5000 }));
   if (agent === 'fake') await step('model field', () => win.fill('.modal input[placeholder^="Model for"]', model, { timeout: 5000 }));
+  // A second session in a checkout that already has one is offered a worktree; these tests mean the same checkout.
+  if (agent !== 'shell' && usedRepos.has(repo)) {
+    await step(`checkout offer for ${repo} (${agent})`, () => win.waitForSelector('.modal .shared-note', { timeout: 8000 }));
+    await step('same checkout', () => win.click('.modal .shared-note .seg-btn:text-is("Same checkout")', { timeout: 5000 }));
+  }
+  if (agent !== 'shell') usedRepos.add(repo);
   const before = (await snapshot(win)).sessions.length;
   await step('start', () => win.click('.modal .btn.primary', { timeout: 5000 }));
   await waitFor(async () => (await snapshot(win)).sessions.length > before, `session in ${repo}`, 15_000);

@@ -1,3 +1,5 @@
+import { DEFAULT_PREFS, loadPrefs, savePrefs, type Prefs } from './prefs';
+import { playSound } from './sounds';
 import { BrowserWindow, Menu, Notification, app, clipboard, dialog, ipcMain, nativeTheme, shell, type Rectangle } from 'electron';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -133,12 +135,16 @@ daemon.on('files.changed', (e) => win?.webContents.send('files.changed', e));
 daemon.on('rich.event', (e) => win?.webContents.send('rich.event', e));
 daemon.on('attention', (a: AttentionEvent) => {
   win?.webContents.send('attention', a);
+  const visible = !!win && win.isFocused() && activeSessionId === a.sessionId;
+  // Jarvis's own sound, so it is not the one every other app makes. It plays for any session, even one on screen,
+  // unless you chose to skip those.
+  if ((a.phase === 'done' ? prefs.soundDone : prefs.soundNeeds) && !(prefs.soundOnlyWhenAway && visible)) playSound(a.phase === 'done' ? 'done' : 'needs');
   // Notify only when you can't already see it: another session is on screen, or Jarvis isn't focused.
-  if (win && win.isFocused() && activeSessionId === a.sessionId) return;
+  if (visible || !prefs.notify) return;
   const s = (daemon.snapshot as Snapshot | null)?.sessions.find((x) => x.id === a.sessionId);
   const name = s?.agentState?.title || s?.name || 'Session';
   const body = a.phase === 'needs_input' ? a.message || 'Needs your input' : s?.agentState?.lastReply?.slice(0, 180) || 'Finished';
-  const n = new Notification({ title: a.phase === 'needs_input' ? `${name} needs you` : `${name} is done`, body, silent: a.phase !== 'needs_input' });
+  const n = new Notification({ title: a.phase === 'needs_input' ? `${name} needs you` : `${name} is done`, body, silent: true });
   n.on('click', () => {
     win?.show();
     win?.focus();
@@ -150,10 +156,17 @@ daemon.on('attention', (a: AttentionEvent) => {
 /** The renderer's theme and fonts (View menu), mirrored here for the menu's checkmarks and the window chrome. */
 let look: AppearanceState = { density: 'normal', theme: DEFAULT_THEME, uiFont: DEFAULT_UI_FONT, monoFont: DEFAULT_MONO_FONT, missingFonts: [] };
 
+let prefs: Prefs = DEFAULT_PREFS;
+function setPref(key: keyof Prefs, value: boolean): void {
+  prefs = { ...prefs, [key]: value };
+  savePrefs(prefs);
+  applyLook();
+}
+
 function applyLook(): void {
   // Match macOS chrome (vibrancy, dialogs, menus, scrollbars) to the theme, whatever the system appearance is.
   nativeTheme.themeSource = THEMES.find((t) => t.id === look.theme)?.kind ?? 'dark';
-  buildMenu(() => win, () => win && toggleMaximize(win, maximized), isDev, look);
+  buildMenu(() => win, () => win && toggleMaximize(win, maximized), isDev, look, prefs, setPref);
 }
 
 ipcMain.on('ui:appearance', (_e, a: AppearanceState) => {
@@ -162,6 +175,7 @@ ipcMain.on('ui:appearance', (_e, a: AppearanceState) => {
 });
 
 app.whenReady().then(() => {
+  prefs = loadPrefs();
   ensureSpawnHelper();
   registerIpc();
   applyLook();

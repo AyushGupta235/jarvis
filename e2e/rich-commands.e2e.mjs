@@ -287,18 +287,25 @@ try {
     await waitFor(async () => (await win.$$(`${V} .rv-pick:not(.muted)`)).length >= 2, 'rewind points', 20_000);
     const idx = await win.evaluate((v) => [...document.querySelectorAll(`${v} .rv-pick`)].findIndex((e) => /Reply with exactly this markdown/.test(e.textContent)), V);
     if (idx < 0) throw new Error('the markdown prompt is not offered as a rewind point');
+    const points = await win.evaluate(([a]) => window.jarvis.rpc('rich.rewindPoints', { id: a }), [s.id]);
+    const promptText = points.find((p) => /Reply with exactly this markdown/.test(p.text))?.text;
+    if (!promptText) throw new Error('could not read the prompt text of the rewind point');
     await win.locator(`${V} .rv-pick`).nth(idx).click();
     const forked = await waitFor(async () => {
       const x = await sess(s.id);
       return x.agentSessionId && x.agentSessionId !== firstId && x.rich?.connected ? x.agentSessionId : null;
     }, 'the forked conversation', 60_000);
     await waitFor(async () => (await win.evaluate((v) => document.querySelector(`${v} .rv-scroll`)?.innerText ?? '', V)).includes(WORD), 'history up to the rewind point', 15_000);
+    // Like Claude Code, the prompt you rewound to is back in the composer, ready to edit and send again.
+    const box = await win.inputValue(`${V} .rv-input`);
+    if (box !== promptText) throw new Error(`the composer holds ${JSON.stringify(box.slice(0, 60))}, not the prompt you rewound to`);
     const shown = await win.evaluate((v) => document.querySelector(`${v} .rv-scroll`)?.innerText ?? '', V);
     if (shown.includes('careful')) throw new Error('prompts after the rewind point are still shown');
     const after = messageLines(orig);
     if (after.length < before.length || before.some((u, i) => after[i] !== u)) throw new Error(`the original lost messages: ${before.length} -> ${after.length}`);
     if (!transcriptOf(forked)) throw new Error('no transcript for the fork');
     const t0 = await turnEnds();
+    await win.fill(`${V} .rv-input`, '');
     await send('What exact word did I ask you to reply with first? Reply with just that word.');
     await waitFor(async () => (await turnEnds()) > t0 && (await lastReply()).includes(WORD), 'recall in the fork', 90_000);
     return `${firstId.slice(0, 8)} kept, continuing in ${forked.slice(0, 8)}`;

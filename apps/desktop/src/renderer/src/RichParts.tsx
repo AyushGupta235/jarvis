@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RichEnvelope, RichEvent } from '@jarvis/protocol';
 import { Prose } from './ProseView';
 import { rpc } from './store';
+import { cleanShellOutput, type ShellRun } from './shellText';
 import { shortenPaths, toolLine } from './toolText';
 
 type Ev<K extends RichEvent['kind']> = Extract<RichEvent, { kind: K }>;
@@ -374,6 +375,45 @@ export function RunAgentPanel({ agents, initial, onRun, onClose }: {
         <button className="btn primary" disabled={!prompt.trim()} onClick={run}>Run agent <kbd>⌘↵</kbd></button>
         <button className="btn" onClick={onClose}>Cancel</button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A `!` command: what you ran, its output as it arrives, and how it ended. Finished ones ride along with your next
+ * message to Claude unless you take them off.
+ */
+export function ShellCard({ run, attach, onStop, onDismiss }: {
+  run: ShellRun;
+  attach: 'pending' | 'sent' | 'none';
+  onStop: () => void;
+  onDismiss: () => void;
+}) {
+  const text = useMemo(() => cleanShellOutput(run.output), [run.output]);
+  const box = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (run.state === 'running' && box.current) box.current.scrollTop = box.current.scrollHeight;
+  }, [text, run.state]);
+  const failed = run.state === 'done' && run.exitCode !== 0;
+  return (
+    <div className={`rv-shell ${run.state}${failed ? ' fail' : ''}`}>
+      <div className="rv-shell-head">
+        <span className="rv-shell-prompt">$</span>
+        <span className="rv-shell-cmd">{run.command}</span>
+        {run.state === 'running' && <span className="rv-dot running">◌</span>}
+        {run.state === 'running' && <button className="chip-btn" onClick={onStop} title="Stop it (Ctrl+C)">Stop</button>}
+        {run.state === 'done' && <span className={`rv-shell-exit${failed ? ' fail' : ''}`}>exit {run.exitCode}</span>}
+        {run.state === 'stopped' && <span className="rv-shell-exit">stopped</span>}
+        {run.state !== 'running' && text && <button className="chip-btn" onClick={() => window.jarvis.copyText(text)} title="Copy the output">Copy</button>}
+      </div>
+      {text ? <pre ref={box} className="rv-shell-out">{text}</pre> : run.state !== 'running' && <div className="rv-shell-empty">(no output)</div>}
+      {run.state !== 'running' && attach === 'pending' && (
+        <div className="rv-shell-foot">
+          <span>goes to Claude with your next message</span>
+          <button className="chip-btn" onClick={onDismiss}>Don't attach</button>
+        </div>
+      )}
+      {attach === 'sent' && <div className="rv-shell-foot sent">sent to Claude</div>}
     </div>
   );
 }

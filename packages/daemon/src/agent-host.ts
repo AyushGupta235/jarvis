@@ -10,6 +10,7 @@
  * a reply {reqId, result | error}. Host ops: hello {pid, agentSessionId, seq}, events {list}, ev {env}, bye {reason}.
  */
 import { forkSession, listSessions, query, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
 import { readChain, type Chain } from './transcript';
@@ -484,6 +485,8 @@ function handle(c: Socket, line: string): void {
     case 'context':
     case 'rewind_points':
     case 'fork':
+    case 'shell_run':
+    case 'shell_stop':
     case 'btw':
     case 'mcp':
     case 'agents':
@@ -499,6 +502,68 @@ function handle(c: Socket, line: string): void {
     default:
       return;
   }
+}
+
+// ---- `!` shell commands ----
+
+const SHELL_OUTPUT_CAP = 1_000_000;
+const shells = new Map<string, { pid: number; stopped: boolean }>();
+
+/**
+ * Run a command you typed after `!`, in the session's directory with the session's environment, like Claude Code's
+ * bash mode. Output streams back as events; it never blocks Claude, and it gets no keyboard input (a command that
+ * waits for input sees the end of it instead of hanging).
+ */
+function runShell(command: string): string {
+  const id = randomUUID().slice(0, 8);
+  push({ kind: 'shell', id, command, state: 'running', exitCode: null });
+  const sh = process.env.SHELL || '/bin/zsh';
+  const child = spawn(sh, ['-lc', command], {
+    cwd: cfg!.cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', PAGER: 'cat', GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' },
+  });
+  const run = { pid: child.pid ?? 0, stopped: false };
+  shells.set(id, run);
+  let buf = '';
+  let total = 0;
+  let timer: NodeJS.Timeout | null = null;
+  const flush = () => {
+    timer = null;
+    if (buf) push({ kind: 'shell_out', id, text: buf });
+    buf = '';
+  };
+  const onData = (d: Buffer) => {
+    if (total >= SHELL_OUTPUT_CAP) return;
+    let t = d.toString('utf8');
+    total += t.length;
+    if (total >= SHELL_OUTPUT_CAP) t = `${t.slice(0, Math.max(0, t.length - (total - SHELL_OUTPUT_CAP)))}\n… output cut off at ${SHELL_OUTPUT_CAP / 1000} KB`;
+    buf += t;
+    timer ??= setTimeout(flush, 120);
+  };
+  child.stdout!.on('data', onData);
+  child.stderr!.on('data', onData);
+  let ended = false;
+  const end = (code: number | null, error?: string) => {
+    if (ended) return;
+    ended = true;
+    if (timer) clearTimeout(timer);
+    if (error) buf += `${buf && !buf.endsWith('\n') ? '\n' : ''}${error}\n`;
+    flush();
+    shells.delete(id);
+    push({ kind: 'shell', id, command, state: run.stopped ? 'stopped' : 'done', exitCode: code });
+  };
+  child.on('error', (e) => end(127, `could not start ${sh}: ${e.message}`));
+  child.on('close', (code) => end(code));
+  return id;
+}
+
+function stopShell(id: string): boolean {
+  const run = shells.get(id);
+  if (!run) return false;
+  run.stopped = true;
+  try { process.kill(-run.pid, 'SIGINT'); } catch { /* already gone */ }
+  setTimeout(() => { try { process.kill(-run.pid, 'SIGKILL'); } catch { /* gone */ } }, 2500).unref();
+  return true;
 }
 
 /** Directories added with /add-dir for this host's lifetime. */
@@ -601,6 +666,13 @@ async function request(op: string, msg: any): Promise<unknown> {
       });
       return { sessionId: r.sessionId };
     }
+    case 'shell_run': {
+      const command = String(msg.command ?? '').trim();
+      if (!command) throw new Error('type a command after !');
+      return { id: runShell(command) };
+    }
+    case 'shell_stop':
+      return { ok: stopShell(String(msg.shellId ?? '')) };
     case 'btw': {
       const question = String(msg.question ?? '').trim();
       if (!question) throw new Error('ask something: /btw <question>');
@@ -662,6 +734,7 @@ async function shutdown(reason: string, code = 0): Promise<void> {
   push({ kind: 'ended', reason });
   for (const c of clients) send(c, { op: 'bye', reason });
   inbox.end();
+  for (const id of shells.keys()) stopShell(id);
   try {
     q?.close();
   } catch { /* already gone */ }

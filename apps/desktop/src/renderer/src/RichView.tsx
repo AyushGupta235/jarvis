@@ -7,11 +7,12 @@ import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
 import { resolveLocalHref, toolLine } from './toolText';
 import { DENSITIES } from '../../shared/themes';
-import { AgentCard, type AgentCtx, BtwCard, RunAgentPanel, agentRequest, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, fmtDuration, isAgentTool, taskByTool } from './RichParts';
+import { AgentCard, type AgentCtx, BtwCard, RunAgentPanel, ShellCard, agentRequest, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, fmtDuration, isAgentTool, taskByTool } from './RichParts';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, canonicalName, commandCatalog, matchCommands, parseCommand, type Command,
 } from './richCommands';
 import { THEMES } from '../../shared/themes';
+import { shellContext, type ShellRun } from './shellText';
 import { setAppearance } from './actions';
 
 function onPlan(src: string | null): boolean {
@@ -310,6 +311,13 @@ function workRuns(
 
 type PickerState = { title: string; items: PickItem[] | null; onPick?: (it: PickItem) => void; empty?: string } | null;
 
+/** Unsent composer text per session, kept while the view is unmounted. */
+const drafts = new Map<string, string>();
+/** `!` commands already sent to Claude with a message, and ones you took off, per session. */
+const shellSent = new Map<string, Set<string>>();
+const shellDismissed = new Map<string, Set<string>>();
+const idSet = (m: Map<string, Set<string>>, id: string): Set<string> => m.get(id) ?? m.set(id, new Set()).get(id)!;
+
 const ACCENTS: Record<string, string> = {
   red: '#e5484d', blue: '#3e8ef7', green: '#30a46c', yellow: '#e5b800', purple: '#8e4ec6', orange: '#f76b15', pink: '#d6409f', cyan: '#12a594',
 };
@@ -323,7 +331,21 @@ const KIND_BADGE: Record<Command['kind'], string | undefined> = { sdk: undefined
  */
 export function RichView({ session, visible }: { session: SessionInfo; visible: boolean }) {
   const [events, setEvents] = useState<RichEnvelope[]>([]);
-  const [draft, setDraft] = useState('');
+  // The draft lives outside the component: restarting a session (rewind, /resume, /cd) unmounts the view for a moment,
+  // and what you were typing, or the prompt a rewind puts back, must survive that.
+  const [draft, setDraftState] = useState(() => drafts.get(session.id) ?? '');
+  const setDraft = (v: string | ((cur: string) => string)) => setDraftState((cur) => {
+    const next = typeof v === 'function' ? v(cur) : v;
+    drafts.set(session.id, next);
+    return next;
+  });
+  useEffect(() => {
+    const sync = (e: Event) => {
+      if ((e as CustomEvent<{ id: string }>).detail.id === session.id) setDraftState(drafts.get(session.id) ?? '');
+    };
+    window.addEventListener('jarvis:draft', sync);
+    return () => window.removeEventListener('jarvis:draft', sync);
+  }, [session.id]);
   const [info, setInfo] = useState<RichInfo | null>(null);
   const [picker, setPicker] = useState<PickerState>(null);
   const [runAgent, setRunAgent] = useState<{ agents: { name: string; description: string; model: string | null }[]; prompt: string; background: boolean } | null>(null);
@@ -467,6 +489,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     const reports = new Map<string, Ev<'task_notice'>>();
     let group: { seq: number; taskId: string; list: Ev<'task_notice'>[] } | null = null;
     const btw = new Map<string, Ev<'btw'>>();
+    const shellSeen = new Set<string>();
     const toolOfTask = new Map<string, string>();
     for (const { event: e } of events) {
       if (e.kind === 'task' && e.toolUseId) toolOfTask.set(e.taskId, e.toolUseId);
@@ -485,6 +508,12 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         const list = kids.get(e.parentToolUseId) ?? [];
         list.push(env);
         kids.set(e.parentToolUseId, list);
+        continue;
+      }
+      if (e.kind === 'shell' || e.kind === 'shell_out') {
+        // One card per command, where it started.
+        if (shellSeen.has(e.id)) hidden.add(env.seq);
+        shellSeen.add(e.id);
         continue;
       }
       if (e.kind === 'btw') {
@@ -529,6 +558,23 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     }
     return m;
   }, [events]);
+
+  // `!` commands: what each printed and how it ended, from their events.
+  const [shellTick, bumpShell] = useState(0);
+  const shellRuns = useMemo(() => {
+    const m = new Map<string, ShellRun>();
+    for (const { event: e } of events) {
+      if (e.kind === 'shell') m.set(e.id, { id: e.id, command: e.command, output: m.get(e.id)?.output ?? '', state: e.state, exitCode: e.exitCode });
+      else if (e.kind === 'shell_out') {
+        const r = m.get(e.id);
+        if (r) r.output += e.text;
+      }
+    }
+    return m;
+  }, [events]);
+  /** Finished commands that have not gone to Claude yet and that you have not taken off. */
+  const pendingShell = [...shellRuns.values()].filter((r) => r.state !== 'running' && !idSet(shellSent, session.id).has(r.id) && !idSet(shellDismissed, session.id).has(r.id));
+  void shellTick;
 
   /** Which sub-agent a request came from, in words ("Explore · map docs"). */
   const agentLabel = (agentId: string | null | undefined): string | null => {
@@ -760,13 +806,29 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       case 'rewind': {
         setPicker({ title: 'Rewind: go back to before one of your prompts', items: null });
         const pts = await rpc<{ uuid: string; text: string; ts: number | null; before: string | null }[]>('rich.rewindPoints', { id: session.id }).catch(() => []);
+        const byKey = new Map(pts.map((p) => [p.uuid, p]));
+        // The prompt you went back to returns to the composer, as in Claude Code, ready to edit and send again.
+        const sid = session.id;
+        const restore = (text: string) => {
+          const cur = drafts.get(sid) ?? '';
+          drafts.set(sid, cur.trim() ? `${text}\n\n${cur}` : text);
+          // The view may have remounted while the session restarted; whichever instance is live picks it up.
+          window.dispatchEvent(new CustomEvent('jarvis:draft', { detail: { id: sid } }));
+          setTimeout(() => document.querySelector<HTMLTextAreaElement>('.rich-wrap:not([style*="none"]) .rv-input')?.focus(), 100);
+        };
         setPicker({
-          title: 'Rewind: go back to before one of your prompts (this makes a new conversation; the original stays in /resume)',
+          title: 'Rewind: go back to before one of your prompts (a new conversation; the original stays in /resume). The prompt goes back in the box.',
           empty: 'No earlier prompts found.',
-          items: pts.filter((p) => p.before).map((p) => ({ key: p.before!, label: p.text.replace(/\s+/g, ' ').slice(0, 110), detail: p.ts ? `${ago(p.ts)} ago` : '' })),
+          items: pts.map((p) => ({ key: p.uuid, label: p.text.replace(/\s+/g, ' ').slice(0, 110), detail: p.ts ? `${ago(p.ts)} ago` : '' })),
           onPick: (it) => {
             setPicker(null);
-            void rpc('rich.rewind', { id: session.id, upToMessageId: it.key }).catch(() => {});
+            const p = byKey.get(it.key);
+            if (!p) return;
+            // The very first prompt has nothing before it to fork at: going back to it is a fresh conversation.
+            const going = p.before
+              ? rpc('rich.rewind', { id: session.id, upToMessageId: p.before })
+              : rpc('rich.send', { id: session.id, text: '/clear' });
+            void going.then(() => restore(p.text)).catch(fail);
           },
         });
         return;
@@ -862,8 +924,21 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     const text = draft.trim();
     if (!text || !connected) return;
     setDraft('');
+    if (text.startsWith('!')) {
+      // Bash mode, as in Claude Code: run it here, show the output, and let it ride with the next message.
+      const command = text.slice(1).trim();
+      if (!command) return;
+      stick.current = true;
+      await rpc('rich.shell', { id: session.id, command }).catch((e) => { setDraft(text); setNote(e instanceof Error ? e.message.replace(/^Error: /, '') : String(e)); });
+      return;
+    }
     if (parseCommand(text)) await runCommand(text);
-    else await sendText(text);
+    else if (pendingShell.length) {
+      const ids = pendingShell.map((r) => r.id);
+      await sendText(`${shellContext(pendingShell)}\n\n${text}`);
+      for (const id of ids) idSet(shellSent, session.id).add(id);
+      bumpShell((n) => n + 1);
+    } else await sendText(text);
   };
 
   const respond = (requestId: string, behavior: 'allow' | 'deny') =>
@@ -1065,6 +1140,14 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           </div>
         );
       }
+      case 'shell': {
+        const run = shellRuns.get(e.id);
+        if (!run) return null;
+        const attach = idSet(shellSent, session.id).has(run.id) ? 'sent' : idSet(shellDismissed, session.id).has(run.id) ? 'none' : 'pending';
+        return <ShellCard key={key} run={run} attach={attach}
+          onStop={() => void rpc('rich.shellStop', { id: session.id, shellId: run.id }).catch(() => {})}
+          onDismiss={() => { idSet(shellDismissed, session.id).add(run.id); bumpShell((n) => n + 1); }} />;
+      }
       case 'local_output':
         return <pre key={key} className="rv-local-out">{e.text}</pre>;
       case 'btw': {
@@ -1095,7 +1178,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   });
   // Typing in the composer must not re-render the whole conversation (thousands of rows in a long history).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, density, ends, resolved, answersById, thinking, structure, agentCtx, taskStates, status, connected, session.cwd, session.id, queuedText, foldedMid]);
+  }, [events, density, ends, resolved, answersById, thinking, structure, agentCtx, taskStates, shellRuns, shellTick, status, connected, session.cwd, session.id, queuedText, foldedMid]);
   return (
     <div className="rich-wrap" data-accent={accent || undefined}
       style={{ display: visible ? 'flex' : 'none', ...(accent && ACCENTS[accent] ? { ['--rv-accent' as string]: ACCENTS[accent] } : {}) }} onMouseDown={() => picker && setPicker(null)}
@@ -1169,9 +1252,9 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         )}
         <textarea
           ref={input}
-          className="rv-input"
+          className={`rv-input${draft.startsWith('!') ? ' shell' : ''}`}
           rows={Math.min(10, Math.max(2, draft.split('\n').length))}
-          placeholder={connected ? 'Message Claude (↵ send · ⇧↵ newline · / commands · esc interrupt)' : 'Not connected'}
+          placeholder={connected ? 'Message Claude (↵ send · ⇧↵ newline · / commands · ! shell · esc interrupt)' : 'Not connected'}
           value={draft}
           disabled={!connected}
           onChange={(e) => setDraft(e.target.value)}
@@ -1193,6 +1276,9 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
             if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.metaKey) {
               e.preventDefault();
               void submit();
+            } else if (e.key === 'Escape' && draft.startsWith('!')) {
+              e.preventDefault();
+              setDraft('');
             } else if (e.key === 'Escape' && working) {
               e.preventDefault();
               void rpc('rich.interrupt', { id: session.id }).catch(() => {});
@@ -1200,6 +1286,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           }}
         />
         <div className="rv-composer-bar">
+          {draft.startsWith('!') && <span className="rv-shellmode">shell · runs in {session.cwd.replace(window.jarvis.homeDir, '~')} · ↵ run · esc cancel</span>}
           <span className="muted">{working ? `working${session.agentState?.tool ? `: ${session.agentState.tool}` : ''}` : connected ? 'ready' : 'disconnected'}</span>
           {note && <span className="rv-toast">{note}</span>}
           <span className="strip-spacer" />

@@ -50,7 +50,7 @@ export type SessionMode = 'terminal' | 'rich';
  * Bumped whenever the rich session host (packages/daemon/src/agent-host.ts) gains something the app relies on.
  * Hosts outlive app updates, so a session whose host reports an older number is offered a restart.
  */
-export const RICH_HOST_PROTOCOL = 6;
+export const RICH_HOST_PROTOCOL = 7;
 
 export interface SessionInfo {
   /** Stable short id. External sessions use `ext:<tmux name>`. */
@@ -351,6 +351,9 @@ export type RichEvent =
   | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null; stopped?: boolean }
   /** Claude is summarising the conversation to free context. Ends with the `compact` that follows. */
   | { kind: 'compacting' }
+  /** A `!` shell command you ran from the composer: it started, and how it ended. Its output arrives as `shell_out` chunks. */
+  | { kind: 'shell'; id: string; command: string; state: 'running' | 'done' | 'stopped'; exitCode: number | null }
+  | { kind: 'shell_out'; id: string; text: string }
   /** What a slash command that Claude Code ran itself printed (shown when replaying history). */
   | { kind: 'local_output'; text: string }
   /** Plan rate limits, as the SDK reports them each turn (resetsAt in epoch ms, `at` is when it was read). */
@@ -526,6 +529,9 @@ export interface RpcMethods {
   /** A message held in the queue: change its text, drop it, or hand it to Claude now (which stops the current turn). */
   'rich.queue': [{ id: string; uuid: string; action: 'edit' | 'remove' | 'sendNow'; text?: string }, { ok: boolean; reason?: string }];
   'rich.respond': [{ id: string; requestId: string; behavior: 'allow' | 'deny'; message?: string }, { ok: true }];
+  /** `!command` in the composer: run it in the session's directory (output streams back as events). */
+  'rich.shell': [{ id: string; command: string }, { id: string }];
+  'rich.shellStop': [{ id: string; shellId: string }, { ok: boolean }];
   /** The steps a finished sub-agent took, from its own transcript, for a card opened after a restart. */
   'rich.agentSteps': [{ id: string; agentId: string; toolUseId: string }, { events: RichEvent[] }];
   /** /btw: ask a side question about the conversation without adding to it; the answer arrives as a `btw` event. */

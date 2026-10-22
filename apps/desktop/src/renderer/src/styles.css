@@ -944,3 +944,19 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .rv-runagent-actions { display: flex; gap: 8px; }
 .rv-agent.stopped { border-left-color: var(--subtle); }
 .rv-agent.stopped .rv-agent-desc { color: var(--muted); }
+
+/* ! shell commands */
+.rv-input.shell { font-family: var(--mono); border-color: var(--pine); box-shadow: 0 0 0 1px var(--pine) inset; }
+.rv-shellmode { font-size: 11px; color: var(--pine); margin-right: 8px; }
+.rv-shell { margin: 10px 0; border-radius: 9px; border: 1px solid rgb(var(--text-rgb) / 0.12); background: var(--code-bg); overflow: hidden; }
+.rv-shell.running { border-color: rgb(var(--gold-rgb) / 0.5); }
+.rv-shell.fail { border-color: rgb(var(--love-rgb) / 0.5); }
+.rv-shell-head { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; font-family: var(--mono); font-size: 12px; background: rgb(var(--text-rgb) / 0.04); }
+.rv-shell-prompt { color: var(--pine); font-weight: 700; flex: none; }
+.rv-shell-cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); }
+.rv-shell-exit { flex: none; font-size: 11px; color: var(--pine); }
+.rv-shell-exit.fail { color: var(--love); }
+.rv-shell-out { margin: 0; padding: 8px 10px; max-height: 340px; overflow: auto; font: 12px/1.5 var(--mono); color: var(--text-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv-shell-empty { padding: 6px 10px; font-size: 11.5px; color: var(--muted); }
+.rv-shell-foot { display: flex; align-items: center; gap: 10px; padding: 4px 10px; font-size: 11px; color: var(--gold); border-top: 1px solid rgb(var(--text-rgb) / 0.07); }
+.rv-shell-foot.sent { color: var(--muted); }

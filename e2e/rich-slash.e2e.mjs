@@ -253,6 +253,23 @@ try {
     return 'fork and branch keep the conversation';
   });
 
+  await soft('/rewind puts the prompt you went back to into the composer', async () => {
+    // (after /branch the conversation has a second prompt to go back to)
+    await send('/rewind');
+    await waitFor(async () => (await win.$$(`${V} .rv-pick:not(.muted)`)).length >= 1, 'rewind points', 20_000);
+    const points = await rpc('rich.rewindPoints', { id: s.id });
+    const want = points.find((p) => /^What number did I ask you to remember/.test(p.text) && p.before)?.text;
+    if (!want) throw new Error('no rewind point for the later prompt');
+    const before = (await sess(s.id)).agentSessionId;
+    await win.locator(`${V} .rv-pick`).filter({ hasText: 'What number did I ask you to remember' }).first().click();
+    await waitFor(async () => (await sess(s.id)).agentSessionId !== before && (await sess(s.id)).rich?.connected, 'the fork', 60_000);
+    await waitFor(async () => (await win.inputValue(`${V} .rv-input`)) !== '', 'the composer to fill', 10_000).catch(() => {});
+    const box = await win.inputValue(`${V} .rv-input`);
+    if (box !== want) throw new Error(`the composer holds ${JSON.stringify(box.slice(0, 50))} instead of ${JSON.stringify(want.slice(0, 50))}`);
+    await win.fill(`${V} .rv-input`, '');
+    return 'the prompt is back in the box';
+  });
+
   await soft('/cd moves the session to another directory with the conversation', async () => {
     const other = join(tmp, 'repos', 'other');
     mkdirSync(other, { recursive: true });
@@ -262,6 +279,19 @@ try {
     await turn('What number did I ask you to remember? Reply with just the number.');
     if (!/7311/.test((await text()).split('What number did I ask you to remember? Reply with just the number.').pop())) throw new Error('the conversation did not come along');
     return 'moved, conversation intact';
+  });
+
+  await soft('/rewind to the very first prompt starts a fresh conversation with that prompt in the composer', async () => {
+    const before = (await sess(s.id)).agentSessionId;
+    await send('/rewind');
+    await waitFor(async () => (await win.$$(`${V} .rv-pick:not(.muted)`)).length >= 1, 'rewind points', 20_000);
+    const points = await rpc('rich.rewindPoints', { id: s.id });
+    const first = points.find((p) => /^Remember the number 7311/.test(p.text))?.text;
+    if (!first) throw new Error('the first prompt is not offered');
+    await win.locator(`${V} .rv-pick`).filter({ hasText: 'Remember the number 7311' }).first().click();
+    await waitFor(async () => (await sess(s.id)).agentSessionId !== before, 'a new conversation', 60_000);
+    await waitFor(async () => (await win.inputValue(`${V} .rv-input`)) === first, 'the prompt in the composer', 15_000);
+    return 'fresh conversation, prompt restored';
   });
 
   await soft('a screen-only command (/powerup) still reopens in a terminal', async () => {
