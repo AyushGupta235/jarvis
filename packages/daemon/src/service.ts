@@ -156,6 +156,7 @@ export class JarvisService extends EventEmitter {
       if (ev.kind === 'context') {
         o.observers.patch(id, { context: { usedPct: ev.usedPct, usedTokens: ev.usedTokens, windowTokens: ev.windowTokens } });
       }
+      if (ev.kind === 'limits') o.observers.setClaudeLimits(ev);
       if (ev.kind === 'question_request') o.observers.setPhase(id, 'needs_input', `Question: ${ev.questions[0]?.header || ev.questions[0]?.question || 'Claude asks'}`);
       else if (ev.kind === 'permission_request') o.observers.setPhase(id, 'needs_input', `Permission: ${ev.tool}`);
       else if (ev.kind === 'permission_resolved' && o.observers.state(id)?.phase === 'needs_input') o.observers.setPhase(id, 'working');
@@ -374,6 +375,10 @@ export class JarvisService extends EventEmitter {
 
   richInterrupt(id: string): void {
     this.o.rich.interrupt(id);
+  }
+
+  richQueue(id: string, uuid: string, action: 'edit' | 'remove' | 'sendNow', text?: string): Promise<{ ok: boolean; reason?: string }> {
+    return this.o.rich.request<{ ok: boolean; reason?: string }>(id, `queue_${action}`, { uuid, text });
   }
 
   richRespond(id: string, requestId: string, behavior: 'allow' | 'deny', message?: string): void {
@@ -787,10 +792,14 @@ export class JarvisService extends EventEmitter {
 
   limits(): UsageSummary['limits'] {
     const c = this.o.observers.claudeLimits;
+    // A window that has reset says nothing about the new one until a session reports again, so it isn't shown.
+    const live = (w: typeof c.fiveHour) => (w && (!w.resetsAt || w.resetsAt > Date.now()) ? w : null);
+    const five = live(c.fiveHour);
+    const seven = live(c.sevenDay);
     return {
       claude: {
-        fiveHour: c.fiveHour ? { ...c.fiveHour, windowMinutes: 300 } : null,
-        sevenDay: c.sevenDay ? { ...c.sevenDay, windowMinutes: 10080 } : null,
+        fiveHour: five ? { ...five, windowMinutes: 300 } : null,
+        sevenDay: seven ? { ...seven, windowMinutes: 10080 } : null,
         asOf: c.asOf,
       },
       codex: this.o.usage.codexLimits,

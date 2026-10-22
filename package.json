@@ -17,7 +17,7 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "vitest run",
     "e2e": "pnpm build && node e2e/relaunch.e2e.mjs",
-    "e2e:rich": "pnpm build && node e2e/rich.e2e.mjs && node e2e/rich-commands.e2e.mjs && node e2e/rich-extras.e2e.mjs && node e2e/rich-agents.e2e.mjs",
+    "e2e:rich": "pnpm build && node e2e/rich.e2e.mjs && node e2e/rich-commands.e2e.mjs && node e2e/rich-extras.e2e.mjs && node e2e/rich-agents.e2e.mjs && node e2e/rich-queue.e2e.mjs",
     "e2e:ui": "pnpm build && node e2e/layout.e2e.mjs && node e2e/themes.e2e.mjs"
   },
   "devDependencies": {

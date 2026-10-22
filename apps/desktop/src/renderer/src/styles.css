@@ -767,7 +767,13 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 /* Queued messages and context in the rich composer */
 .rv-queue { margin: 0 0 8px; padding: 6px 10px; border-radius: 9px; border: 1px dashed rgb(var(--text-rgb) / 0.18); background: rgb(var(--text-rgb) / 0.025); }
 .rv-queue-title { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-.rv-queue-item { font-size: 13px; color: var(--text-soft); white-space: pre-wrap; padding: 2px 0; }
+.rv-queue-item { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--text-soft); padding: 3px 0; }
+.rv-queue-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 6.4em; overflow: hidden; }
+.rv-queue-actions { flex: none; display: inline-flex; gap: 4px; align-items: center; }
+.rv-queue-actions .chip-btn { font-size: 10.5px; padding: 1px 7px; }
+.rv-queue-state { flex: none; font-size: 10.5px; color: var(--muted); }
+.rv-queue-item.sent { opacity: 0.6; }
+.rv-queue-edit { flex: 1; min-width: 0; resize: vertical; font: inherit; color: var(--text); background: rgb(var(--text-rgb) / 0.05); border: 1px solid rgb(var(--text-rgb) / 0.18); border-radius: 7px; padding: 5px 8px; }
 .rv-queue-item + .rv-queue-item { border-top: 1px solid rgb(var(--text-rgb) / 0.06); }
 .rv-user-tag { margin-left: 10px; font-size: 10.5px; color: var(--muted); }
 .rv-ctx { font-size: 11px; color: var(--subtle); font-variant-numeric: tabular-nums; }

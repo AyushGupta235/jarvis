@@ -69,8 +69,8 @@ export function Sidebar() {
       <div className="sidebar-foot">
         {limits && (limits.claude.fiveHour || limits.codex.primary) && (
           <button className="limits" title="Plan limits · open Pulse" onClick={() => setState({ navOpen: true, navTab: 'usage' })}>
-            {limits.claude.fiveHour && <Lim label="5h" pct={limits.claude.fiveHour.usedPct} reset={limits.claude.fiveHour.resetsAt} />}
-            {limits.claude.sevenDay && <Lim label="7d" pct={limits.claude.sevenDay.usedPct} reset={limits.claude.sevenDay.resetsAt} />}
+            {limits.claude.fiveHour && (!limits.claude.fiveHour.resetsAt || limits.claude.fiveHour.resetsAt > now) && <Lim label="5h" pct={limits.claude.fiveHour.usedPct} reset={limits.claude.fiveHour.resetsAt} />}
+            {limits.claude.sevenDay && (!limits.claude.sevenDay.resetsAt || limits.claude.sevenDay.resetsAt > now) && <Lim label="7d" pct={limits.claude.sevenDay.usedPct} reset={limits.claude.sevenDay.resetsAt} />}
             {limits.codex.primary && (!limits.codex.primary.resetsAt || limits.codex.primary.resetsAt > Date.now()) &&
               <Lim label="cx" pct={limits.codex.primary.usedPct} reset={limits.codex.primary.resetsAt} />}
           </button>

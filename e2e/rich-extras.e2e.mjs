@@ -90,7 +90,7 @@ try {
   await win.click(`[data-id="${s.id}"]`);
 
   // 1. Queued message.
-  await soft('a message sent mid-turn waits in the queue tray, then shows as read and gets answered', async () => {
+  await soft('a message sent mid-turn waits in the queue tray, then goes to Claude when the turn ends and gets answered', async () => {
     const t0 = await turns();
     await send('Run the Bash command `sleep 8 && echo slept` and then reply with just DONE-ONE.');
     await win.waitForSelector(`${V} .rv-work .rv-dot.running, ${V} .rv-tool.running`, { timeout: 60_000 });
@@ -101,9 +101,9 @@ try {
     await win.screenshot({ path: join(ART, 'extras-1-queued.png') });
     await waitFor(async () => (await turns()) > t0 && !(await win.$(`${V} .rv-queue-item`)), 'turn end and empty tray', 90_000);
     const read = await win.evaluate(({ v, w }) => [...document.querySelectorAll(`${v} .rv-scroll .rv-user`)].find((e) => e.textContent.includes(w))?.textContent ?? '', { v: V, w: `QUEUED${tag}` });
-    if (!/read mid-turn/.test(read)) throw new Error(`not shown as read: ${read}`);
+    if (!read) throw new Error('the queued message never appeared in the conversation');
     await waitFor(async () => (await win.evaluate((v) => document.querySelector(`${v} .rv-scroll`).innerText, V)).includes(`QUEUED${tag}`), 'answer', 30_000);
-    return 'tray → read mid-turn';
+    return 'tray → sent at turn end';
   });
 
   // 2. Context.

@@ -169,6 +169,59 @@ function QuestionCard({ questions, disabled, onAnswer, onSkip }: {
   );
 }
 
+/**
+ * Messages you sent while Claude works, held in Jarvis until it is ready for them. Each can be edited, removed, or
+ * sent now (which stops the current turn so Claude takes it straight away). Ones already handed to Claude are
+ * shown dimmed until it reads them.
+ */
+function QueueTray({ items, paused, onAction }: {
+  items: { uuid: string; text: string; sent: boolean }[];
+  paused: boolean;
+  onAction: (uuid: string, action: 'edit' | 'remove' | 'sendNow', text?: string) => void;
+}) {
+  const [editing, setEditing] = useState<{ uuid: string; text: string } | null>(null);
+  const save = () => {
+    if (editing && editing.text.trim()) onAction(editing.uuid, 'edit', editing.text);
+    setEditing(null);
+  };
+  return (
+    <div className="rv-queue">
+      <div className="rv-queue-title">
+        {paused ? 'Stopped · these are held until you send them' : 'Queued · held here until Claude is ready; edit, remove or send now'}
+      </div>
+      {items.map((it) => (
+        <div key={it.uuid} className={`rv-queue-item${it.sent ? ' sent' : ''}`}>
+          {editing?.uuid === it.uuid ? (
+            <>
+              <textarea className="rv-queue-edit" autoFocus rows={Math.min(8, Math.max(2, editing.text.split('\n').length))} value={editing.text}
+                onChange={(e) => setEditing({ uuid: it.uuid, text: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
+                  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(null); }
+                }} />
+              <span className="rv-queue-actions">
+                <button className="chip-btn" onClick={save} disabled={!editing.text.trim()}>Save <kbd>↵</kbd></button>
+                <button className="chip-btn" onClick={() => setEditing(null)}>Cancel <kbd>esc</kbd></button>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="rv-queue-text">{it.text}</span>
+              {it.sent ? <span className="rv-queue-state">with Claude</span> : (
+                <span className="rv-queue-actions">
+                  <button className="chip-btn" title="Stop the current turn and send this now" onClick={() => onAction(it.uuid, 'sendNow')}>Send now</button>
+                  <button className="chip-btn" onClick={() => setEditing({ uuid: it.uuid, text: it.text })}>Edit</button>
+                  <button className="chip-btn" title="Remove from the queue" onClick={() => onAction(it.uuid, 'remove')}>✕</button>
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** One run of the agent's work: its rows, plus what the collapsed summary needs. */
 interface WorkRun {
   key: string;
@@ -601,15 +654,29 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   const respond = (requestId: string, behavior: 'allow' | 'deny') =>
     void rpc('rich.respond', { id: session.id, requestId, behavior }).catch(() => {});
   const working = session.agentState?.phase === 'working';
-  // Messages sent mid-turn: their text by uuid, and the ones Claude hasn't read yet (shown above the composer).
-  const { queuedText, waiting } = useMemo(() => {
+  // Messages sent while Claude works wait in a tray (Jarvis holds them): their current text by uuid, which ones Claude
+  // has been handed, which folded into the running turn, and whether you stopped Claude with some still held.
+  const { queuedText, waiting, foldedMid, pausedQueue } = useMemo(() => {
     const queuedText = new Map<string, string>();
-    const read = new Set<string>();
+    const gone = new Set<string>();
+    const sent = new Set<string>();
+    const foldedMid = new Set<string>();
+    let paused = false;
     for (const { event: e } of events) {
       if (e.kind === 'user' && e.queued && e.uuid) queuedText.set(e.uuid, e.text);
-      else if (e.kind === 'user_read') for (const u of e.uuids) read.add(u);
+      else if (e.kind === 'user_read') for (const u of e.uuids) gone.add(u);
+      else if (e.kind === 'queue') {
+        if (e.action === 'edit' && e.uuid && e.text != null) queuedText.set(e.uuid, e.text);
+        else if (e.action === 'remove' && e.uuid) gone.add(e.uuid);
+        else if (e.action === 'release' && e.uuid) {
+          sent.add(e.uuid);
+          if (e.midTurn) foldedMid.add(e.uuid);
+          paused = false;
+        } else if (e.action === 'paused') paused = true;
+      }
     }
-    return { queuedText, waiting: [...queuedText.entries()].filter(([u]) => !read.has(u)) };
+    const waiting = [...queuedText.entries()].filter(([u]) => !gone.has(u)).map(([uuid, text]) => ({ uuid, text, sent: sent.has(uuid) }));
+    return { queuedText, waiting, foldedMid, pausedQueue: paused && waiting.some((w) => !w.sent) };
   }, [events]);
   const workControls: WorkControls = {
     background: () => void background(),
@@ -685,8 +752,8 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         if (e.queued && e.uuid) return null;
         return <UserMessage key={key} text={e.text} replay={!!replay} />;
       case 'user_read':
-        return e.uuids.map((u) => queuedText.get(u)).filter((t): t is string => t != null).map((t, i) => (
-          <UserMessage key={`${key}-${i}`} text={t} replay={false} tag="read mid-turn" />
+        return e.uuids.filter((u) => queuedText.has(u)).map((u) => (
+          <UserMessage key={`${key}-${u}`} text={queuedText.get(u)!} replay={false} tag={foldedMid.has(u) ? 'read mid-turn' : undefined} />
         ));
       case 'text':
         if (/^API Error:/.test(e.text)) return <div key={key} className="rv-apierr">{e.text.replace(/^API Error:\s*/, '')}</div>;
@@ -772,7 +839,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         const cost = e.costUsd ? `$${e.costUsd.toFixed(2)}` : null;
         return (
           <div key={key} className={`rv-turn${e.ok ? '' : ' err'}`}>
-            {e.ok ? 'done' : `failed: ${e.error ?? 'unknown error'}`}
+            {e.stopped ? 'stopped' : e.ok ? 'done' : `failed: ${e.error ?? 'unknown error'}`}
             {e.durationMs != null && ` · ${(e.durationMs / 1000).toFixed(1)}s`}
             {cost && (plan
               ? <span title="What this turn would cost at API prices. On your plan it counts against your limits instead."> · ≈{cost} API equiv.</span>
@@ -804,7 +871,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   });
   // Typing in the composer must not re-render the whole conversation (thousands of rows in a long history).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, density, ends, resolved, answersById, thinking, structure, status, connected, session.cwd, session.id, queuedText]);
+  }, [events, density, ends, resolved, answersById, thinking, structure, status, connected, session.cwd, session.id, queuedText, foldedMid]);
   return (
     <div className="rich-wrap" style={{ display: visible ? 'flex' : 'none' }} onMouseDown={() => picker && setPicker(null)}
       onKeyDown={(e) => {
@@ -853,10 +920,11 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           onCompact={() => { setContext(null); void sendText('/compact'); }} />}
         {picker && <Picker {...picker} onClose={() => { setPicker(null); input.current?.focus(); }} />}
         {waiting.length > 0 && (
-          <div className="rv-queue" title="Claude Code folds these in at its next step">
-            <div className="rv-queue-title">Queued · Claude reads {waiting.length === 1 ? 'this' : 'these'} at its next step</div>
-            {waiting.map(([u, t]) => <div key={u} className="rv-queue-item">{t}</div>)}
-          </div>
+          <QueueTray items={waiting} paused={pausedQueue} onAction={(uuid, action, text) => {
+            void rpc<{ ok: boolean; reason?: string }>('rich.queue', { id: session.id, uuid, action, text })
+              .then((r) => { if (!r.ok) setNote(r.reason ?? 'Could not change that message'); })
+              .catch(() => setNote('Could not reach the session'));
+          }} />
         )}
         {palette && palette.length > 0 && (
           <div className="rv-palette" onMouseDown={(e) => e.preventDefault()}>

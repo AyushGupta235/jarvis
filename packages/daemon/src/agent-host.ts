@@ -120,7 +120,11 @@ function pushTask(taskId: string, toolUseId: string | null, state: Extract<RichE
   });
 }
 
+/** Last time anything arrived from Claude; with the state below it tells a held queue that nothing is going to flush it. */
+let lastActivity = Date.now();
+
 function onSdkMessage(m: SDKMessage): void {
+  lastActivity = Date.now();
   switch (m.type) {
     case 'system':
       if (m.subtype === 'init') {
@@ -140,6 +144,14 @@ function onSdkMessage(m: SDKMessage): void {
       } else if (m.subtype === 'compact_boundary') {
         const c = m.compact_metadata;
         push({ kind: 'compact', trigger: c?.trigger, preTokens: c?.pre_tokens, postTokens: c?.post_tokens, durationMs: c?.duration_ms });
+      } else if (m.subtype === 'session_state_changed') {
+        // The SDK's own word on whether a turn is running. Idle means anything held can go now.
+        if (m.state === 'running') turnActive = true;
+        else if (m.state === 'idle') {
+          turnActive = false;
+          for (const [, v] of unread) v.queued = false;
+          if (held.length && !paused) releaseAll(false);
+        }
       } else if (m.subtype === 'status') {
         if (m.status === 'compacting') push({ kind: 'compacting' });
         else if (m.compact_result === 'failed') push({ kind: 'compact', error: m.compact_error ?? 'compaction failed' });
@@ -173,17 +185,40 @@ function onSdkMessage(m: SDKMessage): void {
       return;
     }
     case 'user':
-      if (!m.parent_tool_use_id && Array.isArray((m.message as { content?: unknown }).content)) foldQueued();
+      if (!m.parent_tool_use_id && Array.isArray((m.message as { content?: unknown }).content)) {
+        if (RELEASE === 'next-step' && held.length && !paused) releaseAll(true);
+        foldQueued();
+      }
       fromMessage('user', m.message, m.parent_tool_use_id, false);
       return;
+    case 'rate_limit_event': {
+      const info = m.rate_limit_info as { unifiedWindows?: Record<string, { utilization?: number; resetsAt?: number }>; rateLimitType?: string; utilization?: number; resetsAt?: number };
+      const win = (name: string, type: string) => {
+        const w = info.unifiedWindows?.[name] ?? (info.rateLimitType === type ? info : undefined);
+        return w && typeof w.utilization === 'number' ? { usedPct: Math.round(w.utilization * 1000) / 10, resetsAt: w.resetsAt ? w.resetsAt * 1000 : null } : null;
+      };
+      const fiveHour = win('five_hour', 'five_hour');
+      const sevenDay = win('seven_day', 'seven_day');
+      if (fiveHour || sevenDay) push({ kind: 'limits', at: Date.now(), fiveHour, sevenDay });
+      return;
+    }
     case 'result':
       turnActive = unread.size > 0; // anything still unread starts the next turn
       for (const [, v] of unread) v.queued = false;
+      if (held.length) {
+        if (paused) push({ kind: 'queue', action: 'paused' });
+        else releaseAll(false);
+      }
       void reportContext();
-      push({
-        kind: 'turn_end', ok: m.subtype === 'success', durationMs: m.duration_ms ?? null, costUsd: m.total_cost_usd ?? null,
-        error: m.subtype === 'success' ? null : ('errors' in m && m.errors?.length ? m.errors.join('; ') : m.subtype),
-      });
+      {
+        const stopped = stopRequested && m.subtype !== 'success';
+        stopRequested = false;
+        push({
+          kind: 'turn_end', ok: m.subtype === 'success' || stopped, durationMs: m.duration_ms ?? null, costUsd: m.total_cost_usd ?? null,
+          error: m.subtype === 'success' || stopped ? null : ('errors' in m && m.errors?.length ? m.errors.join('; ') : m.subtype),
+          ...(stopped ? { stopped: true } : {}),
+        });
+      }
       return;
     default:
       return;
@@ -252,6 +287,58 @@ async function backgroundNow(): Promise<boolean> {
   return foreground.size ? q!.backgroundTasks() : false;
 }
 const unread = new Map<string, { sentAt: number; queued: boolean }>();
+
+/**
+ * Messages sent while a turn runs wait here, in Jarvis, so you can edit one, remove one, or send one now. They go to
+ * Claude when the turn ends ('turn-end', the default) or at its next tool boundary ('next-step', which is how Claude
+ * Code's own terminal folds them in). Stopping a turn holds what is left until you decide.
+ */
+interface Held { uuid: string; text: string }
+const held: Held[] = [];
+const RELEASE: 'turn-end' | 'next-step' = process.env.JARVIS_QUEUE_RELEASE === 'next-step' ? 'next-step' : 'turn-end';
+let paused = false;
+/** You pressed stop (or Send now) and the turn has not ended yet: its ending is not a failure. */
+let stopRequested = false;
+
+/** Hand a held message to Claude. `midTurn`: it folds into the running turn; otherwise it starts the next one. */
+function release(h: Held, midTurn: boolean): void {
+  unread.set(h.uuid, { sentAt: Date.now(), queued: midTurn });
+  push({ kind: 'queue', action: 'release', uuid: h.uuid, midTurn });
+  if (!midTurn) turnActive = true;
+  inbox.push(h.text, h.uuid);
+}
+
+function releaseAll(midTurn: boolean): void {
+  for (const h of held.splice(0)) release(h, midTurn);
+  paused = false;
+}
+
+function queueOp(op: string, msg: { uuid?: string; text?: string }): { ok: boolean; reason?: string } {
+  const i = held.findIndex((h) => h.uuid === msg.uuid);
+  if (i < 0) return { ok: false, reason: 'Claude already has this message' };
+  const h = held[i]!;
+  if (op === 'queue_edit') {
+    const text = String(msg.text ?? '');
+    if (!text.trim()) return { ok: false, reason: 'a message cannot be empty (remove it instead)' };
+    h.text = text;
+    push({ kind: 'queue', action: 'edit', uuid: h.uuid, text });
+  } else if (op === 'queue_remove') {
+    held.splice(i, 1);
+    push({ kind: 'queue', action: 'remove', uuid: h.uuid });
+    if (!held.length) paused = false;
+  } else {
+    // Send now: this message goes first and the running turn is stopped so Claude gets to it straight away.
+    held.splice(i, 1);
+    const busy = turnActive;
+    release(h, false);
+    if (busy) {
+      stopRequested = true;
+      void q?.interrupt().catch((e) => log('interrupt failed', e));
+    }
+    if (!held.length) paused = false;
+  }
+  return { ok: true };
+}
 
 function markRead(uuids: string[]): void {
   const hit = uuids.filter((u) => unread.delete(u));
@@ -345,14 +432,21 @@ function handle(c: Socket, line: string): void {
       const text = String(msg.text ?? '');
       if (!text.trim()) return;
       const uuid = randomUUID();
-      const queued = turnActive;
+      if (turnActive) {
+        held.push({ uuid, text });
+        push({ kind: 'user', text, uuid, queued: true });
+        return;
+      }
       turnActive = true;
-      unread.set(uuid, { sentAt: Date.now(), queued });
-      push({ kind: 'user', text, uuid, ...(queued ? { queued: true } : {}) });
+      unread.set(uuid, { sentAt: Date.now(), queued: false });
+      push({ kind: 'user', text, uuid });
       inbox.push(text, uuid);
       return;
     }
     case 'interrupt':
+      // Stopping is not "send what I queued": what is left waits for you.
+      if (held.length) paused = true;
+      if (turnActive) stopRequested = true;
       void q?.interrupt().catch((e) => log('interrupt failed', e));
       return;
     case 'answer':
@@ -363,6 +457,11 @@ function handle(c: Socket, line: string): void {
       return;
     case 'close':
       void shutdown('closed from Jarvis');
+      return;
+    case 'queue_edit':
+    case 'queue_remove':
+    case 'queue_sendNow':
+      send(c, { op: 'reply', reqId: msg.reqId, result: queueOp(msg.op === 'queue_sendNow' ? 'queue_send' : msg.op, msg) });
       return;
     case 'info':
     case 'context':
@@ -497,6 +596,14 @@ async function main(): Promise<void> {
   }
   await serve();
   writeMeta();
+  // A held message must never be stranded: if Claude has been quiet and nothing it is waiting on is pending, send them.
+  setInterval(() => {
+    if (held.length && !paused && turnActive && pending.size === 0 && runningTools === 0 && Date.now() - lastActivity > 15_000) {
+      log('releasing held messages: no turn is running');
+      turnActive = false;
+      releaseAll(false);
+    }
+  }, 2000).unref();
   log(`host ${process.pid} for ${c.id} on ${c.socketPath} (${c.resume ? 'resume' : 'new'} ${c.agentSessionId})`);
 
   q = query({

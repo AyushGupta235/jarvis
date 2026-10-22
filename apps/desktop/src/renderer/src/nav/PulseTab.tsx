@@ -13,10 +13,10 @@ function windowName(w: RateWindow): string {
   return `${Math.round(m / 60)}-hour`;
 }
 
-function Gauge({ label, w, asOf }: { label: string; w: RateWindow | null; asOf?: number | null }) {
-  if (!w) return null;
-  const stale = !!w.resetsAt && w.resetsAt < Date.now();
-  const pct = stale ? 0 : Math.min(100, w.usedPct);
+/** A plan-limit gauge. A window that has already reset says nothing about the new one, so it isn't drawn. */
+function Gauge({ label, w }: { label: string; w: RateWindow | null }) {
+  if (!w || (w.resetsAt && w.resetsAt <= Date.now())) return null;
+  const pct = Math.min(100, w.usedPct);
   return (
     <div className="gauge">
       <div className="gauge-top">
@@ -24,9 +24,7 @@ function Gauge({ label, w, asOf }: { label: string; w: RateWindow | null; asOf?:
         <span className={pct > 85 ? 'minus' : ''}>{Math.round(pct)}%</span>
       </div>
       <div className="ctx-bar"><div className={`ctx-fill ${pct > 85 ? 'hot' : pct > 60 ? 'warm' : ''}`} style={{ width: `${pct}%` }} /></div>
-      {w.resetsAt && (w.resetsAt > Date.now()
-        ? <div className="gauge-sub">resets in {until(w.resetsAt)}</div>
-        : <div className="gauge-sub">window has reset since this was recorded{asOf ? ` (${new Date(asOf).toLocaleDateString()})` : ''}</div>)}
+      {w.resetsAt && <div className="gauge-sub">resets in {until(w.resetsAt)}</div>}
     </div>
   );
 }
@@ -72,11 +70,13 @@ export function PulseTab() {
 
       <section className="pulse-sec">
         <div className="doc-group-title">Plan limits</div>
-        <Gauge label="Claude" w={l.claude.fiveHour} asOf={l.claude.asOf} />
-        <Gauge label="Claude" w={l.claude.sevenDay} asOf={l.claude.asOf} />
-        <Gauge label={`Codex${l.codex.plan ? ` (${l.codex.plan})` : ''}`} w={l.codex.primary} asOf={l.codex.asOf} />
-        <Gauge label="Codex" w={l.codex.secondary} asOf={l.codex.asOf} />
-        {!l.claude.fiveHour && !l.codex.primary && <div className="muted small">Limits appear once a Claude session started from Jarvis talks to the API, or Codex has run.</div>}
+        <Gauge label="Claude" w={l.claude.fiveHour} />
+        <Gauge label="Claude" w={l.claude.sevenDay} />
+        <Gauge label={`Codex${l.codex.plan ? ` (${l.codex.plan})` : ''}`} w={l.codex.primary} />
+        <Gauge label="Codex" w={l.codex.secondary} />
+        {!l.claude.fiveHour && !l.claude.sevenDay && !l.codex.primary && (
+          <div className="muted small">No current reading. Claude limits update on every turn of a rich session, and while a terminal session redraws its status line; Codex's when it runs.</div>
+        )}
       </section>
 
       <section className="pulse-sec">

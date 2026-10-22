@@ -97,7 +97,18 @@ function toEntry(r: Row): ActivityEntry {
 export class Observers extends EventEmitter {
   private states = new Map<string, AgentLiveState>();
   private cwd = new Map<string, string>();
-  /** Latest Claude plan limits seen in any status line. */
+  /** Plan limits read from a rich session (the SDK reports them each turn). Older readings never replace newer ones. */
+  setClaudeLimits(r: { at: number; fiveHour: { usedPct: number; resetsAt: number | null } | null; sevenDay: { usedPct: number; resetsAt: number | null } | null }): void {
+    if (this.claudeLimits.asOf && r.at <= this.claudeLimits.asOf) return;
+    this.claudeLimits = {
+      fiveHour: r.fiveHour ?? this.claudeLimits.fiveHour,
+      sevenDay: r.sevenDay ?? this.claudeLimits.sevenDay,
+      asOf: r.at,
+    };
+    this.emit('limits');
+  }
+
+  /** Latest Claude plan limits seen, in a terminal session's status line or a rich session's SDK events. */
   claudeLimits: { fiveHour: { usedPct: number; resetsAt: number | null } | null; sevenDay: { usedPct: number; resetsAt: number | null } | null; asOf: number | null } =
     { fiveHour: null, sevenDay: null, asOf: null };
 

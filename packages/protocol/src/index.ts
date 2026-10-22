@@ -50,7 +50,7 @@ export type SessionMode = 'terminal' | 'rich';
  * Bumped whenever the rich session host (packages/daemon/src/agent-host.ts) gains something the app relies on.
  * Hosts outlive app updates, so a session whose host reports an older number is offered a restart.
  */
-export const RICH_HOST_PROTOCOL = 3;
+export const RICH_HOST_PROTOCOL = 4;
 
 export interface SessionInfo {
   /** Stable short id. External sessions use `ext:<tmux name>`. */
@@ -333,6 +333,11 @@ export type RichEvent =
   /** queued: sent while Claude was mid-turn; it shows apart until a `user_read` for its uuid. */
   | { kind: 'user'; text: string; uuid?: string; queued?: boolean }
   | { kind: 'user_read'; uuids: string[] }
+  /**
+   * What happens to a message held in Jarvis's queue (a `user` event with `queued`): you edited it, removed it, it was
+   * handed to Claude (`midTurn` when Claude folds it into the running turn), or Claude was stopped and what is left waits.
+   */
+  | { kind: 'queue'; action: 'edit' | 'remove' | 'release' | 'paused'; uuid?: string; text?: string; midTurn?: boolean }
   | { kind: 'context'; usedPct: number; usedTokens: number; windowTokens: number }
   | { kind: 'text'; text: string; parentToolUseId: string | null }
   | { kind: 'thinking'; text: string; parentToolUseId: string | null }
@@ -343,9 +348,11 @@ export type RichEvent =
   | { kind: 'question_request'; requestId: string; questions: RichQuestion[] }
   | { kind: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny'; answers?: Record<string, string | string[]> }
   | { kind: 'status'; model: string | null; permissionMode: string | null; agentSessionId: string | null; cwd: string | null; authSource: string | null }
-  | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null }
+  | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null; stopped?: boolean }
   /** Claude is summarising the conversation to free context. Ends with the `compact` that follows. */
   | { kind: 'compacting' }
+  /** Plan rate limits, as the SDK reports them each turn (resetsAt in epoch ms, `at` is when it was read). */
+  | { kind: 'limits'; at: number; fiveHour: { usedPct: number; resetsAt: number | null } | null; sevenDay: { usedPct: number; resetsAt: number | null } | null }
   | { kind: 'compact'; trigger?: 'manual' | 'auto'; preTokens?: number; postTokens?: number; durationMs?: number; error?: string }
   /** The summary Claude carries forward after a compaction. */
   | { kind: 'compact_summary'; text: string }
@@ -503,6 +510,8 @@ export interface RpcMethods {
   'rich.history': [{ id: string }, { events: RichEnvelope[]; connected: boolean }];
   'rich.send': [{ id: string; text: string }, { ok: true }];
   'rich.interrupt': [{ id: string }, { ok: true }];
+  /** A message held in the queue: change its text, drop it, or hand it to Claude now (which stops the current turn). */
+  'rich.queue': [{ id: string; uuid: string; action: 'edit' | 'remove' | 'sendNow'; text?: string }, { ok: boolean; reason?: string }];
   'rich.respond': [{ id: string; requestId: string; behavior: 'allow' | 'deny'; message?: string }, { ok: true }];
   /** Ctrl+B: move running tool calls (long Bash commands) to the background so the turn continues. */
   'rich.background': [{ id: string }, { backgrounded: boolean }];
