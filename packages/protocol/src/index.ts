@@ -50,7 +50,7 @@ export type SessionMode = 'terminal' | 'rich';
  * Bumped whenever the rich session host (packages/daemon/src/agent-host.ts) gains something the app relies on.
  * Hosts outlive app updates, so a session whose host reports an older number is offered a restart.
  */
-export const RICH_HOST_PROTOCOL = 2;
+export const RICH_HOST_PROTOCOL = 3;
 
 export interface SessionInfo {
   /** Stable short id. External sessions use `ext:<tmux name>`. */
@@ -60,6 +60,10 @@ export interface SessionInfo {
   rich: { hostPid: number | null; connected: boolean; outdated: boolean } | null;
   tmuxName: string;
   name: string;
+  /** True once you named the session; otherwise the name follows Claude's own title for the conversation. */
+  nameLocked: boolean;
+  /** Another session of yours runs in the same checkout, so the two share its branch and files. */
+  sharesCheckout: boolean;
   agent: AgentKind;
   model: string | null;
   /** The agent's own session id when Jarvis can pin it (Claude: --session-id), so revive can resume it. */
@@ -315,6 +319,8 @@ export interface CreateSessionParams {
   mode?: SessionMode;
   /** Rich sessions: starting permission mode (default: your Claude settings). */
   permissionMode?: RichPermissionMode | null;
+  /** Start in a new git worktree (a new branch off the checkout's current commit) instead of the checkout itself. */
+  worktree?: { branch?: string | null } | null;
 }
 
 export type RichPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
@@ -338,7 +344,19 @@ export type RichEvent =
   | { kind: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny'; answers?: Record<string, string | string[]> }
   | { kind: 'status'; model: string | null; permissionMode: string | null; agentSessionId: string | null; cwd: string | null; authSource: string | null }
   | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null }
-  | { kind: 'compact' }
+  /** Claude is summarising the conversation to free context. Ends with the `compact` that follows. */
+  | { kind: 'compacting' }
+  | { kind: 'compact'; trigger?: 'manual' | 'auto'; preTokens?: number; postTokens?: number; durationMs?: number; error?: string }
+  /** The summary Claude carries forward after a compaction. */
+  | { kind: 'compact_summary'; text: string }
+  /** Progress of a sub-agent or background command, keyed by the tool call that started it. */
+  | {
+    kind: 'task'; taskId: string; toolUseId: string | null; state: 'running' | 'done' | 'failed' | 'stopped';
+    description: string | null; agentType: string | null; tools: number | null; tokens: number | null; durationMs: number | null;
+    lastTool: string | null; progress: string | null; background: boolean;
+  }
+  /** A message from a background task (finished, stopped, or a monitor's event) that Claude Code injected as a prompt. */
+  | { kind: 'task_notice'; taskId: string; toolUseId: string | null; status: 'completed' | 'failed' | 'stopped' | 'event'; summary: string; event: string | null }
   | { kind: 'resumed'; messages: number; shown?: number }
   | { kind: 'error'; message: string }
   | { kind: 'ended'; reason: string };

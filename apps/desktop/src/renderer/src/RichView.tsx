@@ -5,26 +5,12 @@ import { Prose } from './ProseView';
 import { ContextPanel } from './ContextPanel';
 import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
-import { resolveLocalHref, shortenCommand, shortenPaths } from './toolText';
+import { resolveLocalHref, toolLine } from './toolText';
 import { DENSITIES } from '../../shared/themes';
+import { AgentCard, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, isAgentTool, taskByTool } from './RichParts';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, commandCatalog, matchCommands, parseCommand, type Command,
 } from './richCommands';
-
-/** One line describing a tool call, like the Activity tab. */
-function toolLine(tool: string, input: unknown, cwd = ''): string {
-  const i = (input ?? {}) as Record<string, unknown>;
-  const str = (v: unknown) => (typeof v === 'string' ? v : '');
-  const one = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 220);
-  const home = window.jarvis.homeDir;
-  if (tool === 'Bash') return one(shortenCommand(str(i.command), cwd, home));
-  if (tool === 'Read' || tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit') return shortenPaths(str(i.file_path) || str(i.notebook_path), cwd, home);
-  if (tool === 'Grep' || tool === 'Glob') return `${str(i.pattern)}${i.path ? `  in ${shortenPaths(str(i.path), cwd, home)}` : ''}`;
-  if (tool === 'Agent' || tool === 'Task') return one(str(i.description) || str(i.prompt));
-  if (tool === 'WebFetch') return str(i.url);
-  if (tool === 'WebSearch') return str(i.query);
-  return one(JSON.stringify(input ?? {}));
-}
 
 function onPlan(src: string | null): boolean {
   return src === 'none' || src === 'oauth' || src === '/login managed key';
@@ -251,7 +237,7 @@ function workRuns(
   rows.forEach((el, i) => {
     if (!el) return;
     const e = events[i]!.event;
-    if (e.kind === 'tool_start' || e.kind === 'thinking') {
+    if ((e.kind === 'tool_start' && !isAgentTool(e.tool)) || e.kind === 'thinking') {
       if (!run) out.push((run = { key: String(events[i]!.seq), rows: [], tools: [], thoughts: 0 }));
       run.rows.push(el);
       if (e.kind === 'thinking') run.thoughts++;
@@ -404,6 +390,60 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
 
   const density = useStore((s) => s.richDensity);
   const thinking = useMemo(() => foldThinking(events), [events]);
+  // Sub-agents own their steps, and a task's reports stack: both are drawn once, where they start.
+  const structure = useMemo(() => {
+    const agents = new Set<string>();
+    for (const { event: e } of events) if (e.kind === 'tool_start' && isAgentTool(e.tool)) agents.add(e.toolUseId);
+    const kids = new Map<string, RichEnvelope[]>();
+    const hidden = new Set<number>();
+    const notices = new Map<number, Ev<'task_notice'>[]>();
+    const reports = new Map<string, Ev<'task_notice'>>();
+    let group: { seq: number; taskId: string; list: Ev<'task_notice'>[] } | null = null;
+    const toolOfTask = new Map<string, string>();
+    for (const { event: e } of events) {
+      if (e.kind === 'task' && e.toolUseId) toolOfTask.set(e.taskId, e.toolUseId);
+      // History has no task events; an agent's tool result still names it.
+      else if (e.kind === 'tool_end' && agents.has(e.toolUseId)) {
+        const id = /agentId: (\w+)/.exec(e.output)?.[1] ?? /from "(\w+)"/.exec(e.output)?.[1];
+        if (id) toolOfTask.set(id, e.toolUseId);
+      }
+    }
+    let lastCompacting = -1;
+    let lastCompact = -1;
+    for (const env of events) {
+      const e = env.event;
+      if ('parentToolUseId' in e && e.parentToolUseId && agents.has(e.parentToolUseId)) {
+        hidden.add(env.seq);
+        const list = kids.get(e.parentToolUseId) ?? [];
+        list.push(env);
+        kids.set(e.parentToolUseId, list);
+        continue;
+      }
+      if (e.kind === 'task' || e.kind === 'context') continue; // not drawn, so they don't separate a run of reports
+      if (e.kind === 'task_notice') {
+        // A sub-agent's report belongs in its card.
+        const owner = e.toolUseId ?? toolOfTask.get(e.taskId);
+        if (owner && agents.has(owner)) {
+          // A bare completion (no text) must not replace the report that carries the answer.
+          if (e.status !== 'event' && (e.event || !reports.get(owner)?.event)) reports.set(owner, e);
+          hidden.add(env.seq);
+          continue;
+        }
+        if (group && group.taskId === e.taskId) {
+          group.list.push(e);
+          hidden.add(env.seq);
+        } else {
+          group = { seq: env.seq, taskId: e.taskId, list: [e] };
+          notices.set(env.seq, group.list);
+        }
+        continue;
+      }
+      group = null;
+      if (e.kind === 'compacting') lastCompacting = env.seq;
+      else if (e.kind === 'compact') lastCompact = env.seq;
+    }
+    return { kids, hidden, notices, reports, compactingSeq: lastCompacting > lastCompact ? lastCompacting : -1, tasks: taskByTool(events) };
+  }, [events]);
 
   const catalog = useMemo(() => commandCatalog(info), [info]);
   const paletteQuery = /^\/([\w:.@-]*)$/.exec(draft)?.[1];
@@ -637,17 +677,19 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   let lastStatus = '';
   return events.map(({ seq, event: e, replay }) => {
     const key = `${seq}`;
+    if (structure.hidden.has(seq)) return null;
     const sub = 'parentToolUseId' in e && e.parentToolUseId ? ' rv-sub' : '';
     switch (e.kind) {
       case 'user':
         // Sent while Claude was working: it waits in the queue tray, and shows here once Claude reads it.
         if (e.queued && e.uuid) return null;
-        return <div key={key} className={`rv-user${replay ? ' replay' : ''}`}><span className="rv-caret">›</span>{e.text}</div>;
+        return <UserMessage key={key} text={e.text} replay={!!replay} />;
       case 'user_read':
         return e.uuids.map((u) => queuedText.get(u)).filter((t): t is string => t != null).map((t, i) => (
-          <div key={`${key}-${i}`} className="rv-user"><span className="rv-caret">›</span>{t}<span className="rv-user-tag">read mid-turn</span></div>
+          <UserMessage key={`${key}-${i}`} text={t} replay={false} tag="read mid-turn" />
         ));
       case 'text':
+        if (/^API Error:/.test(e.text)) return <div key={key} className="rv-apierr">{e.text.replace(/^API Error:\s*/, '')}</div>;
         return <Prose key={key} text={e.text} className={`rv-text${sub}`} />;
       case 'thinking': {
         if (density === 'focus') return null;
@@ -665,6 +707,10 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       case 'tool_start': {
         if (e.tool === 'AskUserQuestion') return null; // the question card (or the "Asked:" line) stands in for it
         const end = ends.get(e.toolUseId);
+        if (isAgentTool(e.tool)) {
+          return <AgentCard key={key} start={e} end={end} kids={structure.kids.get(e.toolUseId) ?? []} ends={ends}
+            task={structure.tasks.get(e.toolUseId)} report={structure.reports.get(e.toolUseId)} cwd={session.cwd} showThinking={density === 'detailed'} />;
+        }
         const state = !end ? 'running' : end.isError ? 'error' : 'ok';
         return (
           <details key={key} className={`rv-tool ${state}${sub}${density === 'detailed' ? ' compact' : ''}`} open={state === 'error'}>
@@ -735,7 +781,15 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         );
       }
       case 'compact':
-        return <div key={key} className="rv-sep">context compacted</div>;
+        return <CompactMarker key={key} e={e} />;
+      case 'compact_summary':
+        return <CompactSummary key={key} text={e.text} />;
+      case 'compacting':
+        return seq === structure.compactingSeq ? <Compacting key={key} /> : null;
+      case 'task_notice': {
+        const list = structure.notices.get(seq);
+        return list ? <TaskNotices key={key} notices={list} /> : null;
+      }
       case 'resumed':
         return <div key={key} className="rv-sep">{e.shown && e.shown < e.messages
           ? `resumed · showing the latest ${e.shown} of ${e.messages} messages (the rest are in the transcript)`
@@ -750,7 +804,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   });
   // Typing in the composer must not re-render the whole conversation (thousands of rows in a long history).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, density, ends, resolved, answersById, thinking, status, connected, session.cwd, session.id, queuedText]);
+  }, [events, density, ends, resolved, answersById, thinking, structure, status, connected, session.cwd, session.id, queuedText]);
   return (
     <div className="rich-wrap" style={{ display: visible ? 'flex' : 'none' }} onMouseDown={() => picker && setPicker(null)}
       onKeyDown={(e) => {
@@ -836,7 +890,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
               if (e.key === 'Enter' && !e.shiftKey && c) {
                 e.preventDefault();
                 // A command that needs an argument gets completed so you can type it; the rest run now.
-                if (c.hint.startsWith('<') && c.kind !== 'jarvis' && !PICKER_COMMANDS.has(c.name)) setDraft(`/${c.name} `);
+                if (c.hint.startsWith('<') && !/optional/i.test(c.hint) && c.kind !== 'jarvis' && !PICKER_COMMANDS.has(c.name)) setDraft(`/${c.name} `);
                 else { setDraft(''); void runCommand(`/${c.name}`); }
                 return;
               }

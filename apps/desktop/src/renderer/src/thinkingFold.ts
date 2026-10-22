@@ -11,6 +11,7 @@ export function foldThinking(events: RichEnvelope[]): { groups: Map<number, stri
   let cur: string[] | null = null;
   for (const { seq, event: e } of events) {
     if (e.kind === 'thinking') {
+      if (e.parentToolUseId) continue; // a sub-agent's thinking is drawn inside its card
       if (cur) folded.add(seq);
       else groups.set(seq, (cur = []));
       cur.push(e.text);

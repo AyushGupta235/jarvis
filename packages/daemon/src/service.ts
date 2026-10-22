@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import type {
   ActivityEntry, AgentDef, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent,
   FileEntry, RepoCandidate, RichConversation, RichEnvelope, RichInfo, RichPermissionMode, SessionInfo, SessionMode, Snapshot,
@@ -21,9 +21,10 @@ import { FileWatcher, changes as fileChanges, diff as fileDiff, listFiles, readF
 import { listDocs } from './docs';
 import { checkConnectors, listConnectors } from './connectors';
 import { findBinary } from './env';
-import type { Db, SessionRow } from './db';
+import { isPlaceholderName, type Db, type SessionRow } from './db';
 import { Tmux, type LiveSession } from './tmux';
-import { BranchCache, listWorktrees, locate, scanRepos } from './git';
+import { BranchCache, createWorktree, listWorktrees, locate, scanRepos, slugify } from './git';
+import { TitleTracker } from './titles';
 import { userShell } from './env';
 import { log, logError } from './log';
 
@@ -48,11 +49,12 @@ export function claudeTranscriptExists(uuid: string, claudeHome = join(homedir()
 /** The agent's command line, or null for a plain shell. Agents run unmodified; this only builds argv. */
 export function buildAgentCommand(
   def: AgentDef,
-  row: Pick<SessionRow, 'model' | 'agent_session_id' | 'name'>,
+  row: Pick<SessionRow, 'model' | 'agent_session_id' | 'name'> & { name_locked?: number },
   opts: { resume: boolean; extraArgs?: string[]; claudeSettings?: string | null },
 ): string | null {
   if (!def.command) return null;
-  const vars = { model: row.model, sessionId: row.agent_session_id, name: row.name };
+  // An auto-named session is not given `-n`: Claude would keep the placeholder as its title instead of generating one.
+  const vars = { model: row.model, sessionId: row.agent_session_id, name: row.name_locked === 0 ? null : row.name };
   const parts = [def.command, ...(def.args ?? [])];
   // Observer hooks + status line tap, layered on top of the user's own settings (never replacing them).
   if (def.integration === 'claude' && opts.claudeSettings) parts.push('--settings', opts.claudeSettings);
@@ -100,6 +102,7 @@ export class JarvisService extends EventEmitter {
   private live = new Map<string, LiveSession>(); // by tmux name
   private external: LiveSession[] = [];
   private branches = new BranchCache();
+  private titles = new TitleTracker(process.env.JARVIS_CLAUDE_HOME);
   private lastSnapshotJson = '';
   private timer: NodeJS.Timeout | null = null;
   private tick = 0;
@@ -194,6 +197,7 @@ export class JarvisService extends EventEmitter {
       this.health = null;
       this.pollFailures = 0;
       await this.reconcile();
+      this.syncTitles(this.o.db.allSessions());
       this.publish();
     } catch (e) {
       logError('poll failed', e);
@@ -229,7 +233,7 @@ export class JarvisService extends EventEmitter {
       db.insertSession({
         id, tmux_name: s.name, name: s.name, agent: 'shell', model: null, agent_session_id: null,
         cwd: s.currentPath || homedir(), repo_root: loc.repoRoot, worktree: loc.worktree, hidden: 0,
-        status: 'running', created_at: s.created || now, exited_at: null, sort_order: db.nextOrder(), mode: 'terminal', permission_mode: null,
+        status: 'running', created_at: s.created || now, exited_at: null, sort_order: db.nextOrder(), mode: 'terminal', permission_mode: null, name_locked: 1,
       });
       if (s.jarvisId !== id) await this.o.tmux.run(['set-option', '-t', Tmux.paneTarget(s.name), '@jarvis_id', id]).catch(() => {});
       log(`adopted tmux session ${s.name} as ${id}`);
@@ -242,7 +246,7 @@ export class JarvisService extends EventEmitter {
     let order = rows.length;
     for (const e of this.external) {
       sessions.push({
-        id: `ext:${e.name}`, tmuxName: e.name, name: e.name, agent: this.guessAgent(e.currentCommand), model: null,
+        id: `ext:${e.name}`, tmuxName: e.name, name: e.name, nameLocked: true, sharesCheckout: false, agent: this.guessAgent(e.currentCommand), model: null,
         agentSessionId: null, cwd: e.currentPath, currentPath: e.currentPath, repoRoot: 'tmux:default',
         worktree: null, branch: this.branches.get(e.currentPath), hidden: false, status: 'running',
         createdAt: e.created, exitedAt: null, lastActivity: e.activity, attachedClients: e.attached,
@@ -273,7 +277,7 @@ export class JarvisService extends EventEmitter {
     return {
       mode: r.mode,
       rich: isRich ? { hostPid: this.o.rich.hostPid(r.id), connected: running, outdated: running && (this.o.rich.hostProto(r.id) ?? 0) < RICH_HOST_PROTOCOL } : null,
-      id: r.id, tmuxName: r.tmux_name, name: r.name, agent: r.agent, model: r.model,
+      id: r.id, tmuxName: r.tmux_name, name: r.name, nameLocked: !!r.name_locked, sharesCheckout: this.sharesCheckout(r), agent: r.agent, model: r.model,
       agentSessionId: r.agent_session_id, cwd: r.cwd, currentPath: l?.currentPath ?? null,
       repoRoot: r.repo_root, worktree: r.worktree, branch: this.branches.get(path), hidden: !!r.hidden,
       status: running ? 'running' : 'exited', createdAt: r.created_at, exitedAt: r.exited_at,
@@ -312,23 +316,36 @@ export class JarvisService extends EventEmitter {
     }
     const mode = p.mode ?? 'terminal';
     if (mode === 'rich' && def.integration !== 'claude') throw new Error(`Rich view needs Claude for now (${def.label} runs in the terminal)`);
-    const loc = await locate(cwd);
+    let loc = await locate(cwd);
     const id = shortId();
+    let startDir = cwd;
+    if (p.worktree) {
+      if (!loc.toplevel) throw new Error('a worktree needs a git repository');
+      const wanted = (p.worktree.branch || '').trim() || `jarvis/${slugify(p.name || '') === 'session' ? id : slugify(p.name!)}`;
+      const wt = await createWorktree(loc.toplevel, loc.repoRoot, wanted, dirname(this.o.socketPath));
+      // Start where the checkout was pointed, but inside the new worktree (a subfolder keeps its relative path).
+      const rel = relative(loc.toplevel, cwd);
+      startDir = rel && !rel.startsWith('..') ? join(wt.path, rel) : wt.path;
+      mkdirSync(startDir, { recursive: true });
+      loc = await locate(wt.path);
+      log(`created worktree ${wt.path} on ${wt.branch}`);
+    }
     const repoName = basename(loc.worktree ?? loc.repoRoot);
     const defaultName = this.uniqueName(p.agent === 'shell' ? `${repoName} shell` : repoName);
     const row: SessionRow = {
       id, tmux_name: mode === 'rich' ? `r-${id}` : `j-${id}`, name: (p.name || '').trim() || defaultName, agent: p.agent,
       model: def.command ? p.model || null : null,
-      agent_session_id: def.sessionIdArgs || mode === 'rich' ? randomUUID() : null, cwd, repo_root: loc.repoRoot,
+      agent_session_id: def.sessionIdArgs || mode === 'rich' ? randomUUID() : null, cwd: startDir, repo_root: loc.repoRoot,
       worktree: loc.worktree, hidden: 0, status: 'running', created_at: Date.now(), exited_at: null,
       sort_order: this.o.db.nextOrder(), mode, permission_mode: mode === 'rich' ? p.permissionMode ?? null : null,
+      name_locked: (p.name || '').trim() ? 1 : 0,
     };
     if (mode === 'rich') await this.startRich(row, false);
     else await this.startTmux(row, { resume: false, extraArgs: p.extraArgs });
     this.o.db.insertSession(row);
-    this.o.observers.setCwd(id, cwd);
-    if (def.integration === 'codex') this.o.codex.track(id, cwd, Date.now());
-    log(`created session ${id} (${row.agent}) in ${cwd}`);
+    this.o.observers.setCwd(id, startDir);
+    if (def.integration === 'codex') this.o.codex.track(id, startDir, Date.now());
+    log(`created session ${id} (${row.agent}) in ${startDir}`);
     await this.poll();
     return this.toInfo(this.row(id));
   }
@@ -572,10 +589,37 @@ export class JarvisService extends EventEmitter {
     await this.poll();
   }
 
+  /** Naming a session pins the name. An empty name hands it back to Claude's title (or the repo name until it has one). */
   rename(id: string, name: string): void {
-    this.row(id);
-    this.o.db.updateSession(id, { name: name.trim() || this.row(id).name });
+    const r = this.row(id);
+    const n = name.trim();
+    if (n) this.o.db.updateSession(id, { name: n, name_locked: 1 });
+    else {
+      const title = r.agent === 'claude' ? this.claudeTitle(r) : null;
+      const base = basename(r.worktree ?? r.repo_root);
+      this.o.db.updateSession(id, { name_locked: 0, name: title || (r.agent === 'shell' ? `${base} shell` : base) });
+    }
     this.publish();
+  }
+
+  private claudeTitle(r: SessionRow): string | null {
+    const base = basename(r.worktree ?? r.repo_root);
+    return this.titles.get(r.agent_session_id, (t) => isPlaceholderName(t, base));
+  }
+
+  /** Follow Claude's own title for each Claude session you have not named yourself. */
+  private syncTitles(rows: SessionRow[]): void {
+    for (const r of rows) {
+      if (r.agent !== 'claude' || r.name_locked) continue;
+      const title = this.claudeTitle(r);
+      if (title && title !== r.name) this.o.db.updateSession(r.id, { name: title });
+    }
+  }
+
+  /** Another session of yours is in the same checkout (so a branch switch in one moves the other). */
+  private sharesCheckout(r: SessionRow): boolean {
+    const key = r.worktree ?? r.repo_root;
+    return this.o.db.allSessions().some((x) => x.id !== r.id && (x.worktree ?? x.repo_root) === key && x.status === 'running');
   }
 
   setHidden(id: string, hidden: boolean): void {

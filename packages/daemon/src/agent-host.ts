@@ -13,6 +13,7 @@ import { forkSession, listSessions, query, type PermissionResult, type Query, ty
 import { randomUUID } from 'node:crypto';
 import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
 import { readChain, type Chain } from './transcript';
+import { COMPACT_SUMMARY_PREFIX, parseAgentMessage, parseTaskNotification, userText } from './notices';
 import { findTranscript } from './thinking';
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
@@ -74,6 +75,19 @@ function fromMessage(role: 'user' | 'assistant', message: any, parentToolUseId: 
     }
   }
   if (role === 'user') {
+    // Messages Claude Code writes itself: a background task reporting in, and the summary after a compaction.
+    const text = parentToolUseId ? null : userText(content);
+    const notice = text ? parseTaskNotification(text) ?? parseAgentMessage(text) : null;
+    if (notice) {
+      // Live, the SDK already told us this with a structured message (see announced); don't show it twice.
+      if (!replay && announced.has(`${notice.taskId}:${notice.status}`)) return;
+      push(notice, replay);
+      return;
+    }
+    if (text?.startsWith(COMPACT_SUMMARY_PREFIX)) {
+      push({ kind: 'compact_summary', text }, replay);
+      return;
+    }
     if (typeof content === 'string') {
       if (replay) push({ kind: 'user', text: content }, true);
       return;
@@ -93,6 +107,19 @@ function fromMessage(role: 'user' | 'assistant', message: any, parentToolUseId: 
   }
 }
 
+/** Task reports already shown from the SDK's own structured messages: taskId:status. */
+const announced = new Set<string>();
+
+type TaskPatch = Partial<Pick<Extract<RichEvent, { kind: 'task' }>, 'description' | 'agentType' | 'tools' | 'tokens' | 'durationMs' | 'lastTool' | 'progress' | 'background'>>;
+
+/** Sub-agent and background-command progress, one event per change (the view keeps the latest per tool call). */
+function pushTask(taskId: string, toolUseId: string | null, state: Extract<RichEvent, { kind: 'task' }>['state'], p: TaskPatch): void {
+  push({
+    kind: 'task', taskId, toolUseId, state, description: p.description ?? null, agentType: p.agentType ?? null, tools: p.tools ?? null,
+    tokens: p.tokens ?? null, durationMs: p.durationMs ?? null, lastTool: p.lastTool ?? null, progress: p.progress ?? null, background: !!p.background,
+  });
+}
+
 function onSdkMessage(m: SDKMessage): void {
   switch (m.type) {
     case 'system':
@@ -110,12 +137,33 @@ function onSdkMessage(m: SDKMessage): void {
           writeMeta();
         }
         pushStatus();
-      } else if (m.subtype === 'compact_boundary') push({ kind: 'compact' });
-      else if (m.subtype === 'task_started') {
+      } else if (m.subtype === 'compact_boundary') {
+        const c = m.compact_metadata;
+        push({ kind: 'compact', trigger: c?.trigger, preTokens: c?.pre_tokens, postTokens: c?.post_tokens, durationMs: c?.duration_ms });
+      } else if (m.subtype === 'status') {
+        if (m.status === 'compacting') push({ kind: 'compacting' });
+        else if (m.compact_result === 'failed') push({ kind: 'compact', error: m.compact_error ?? 'compaction failed' });
+      } else if (m.subtype === 'task_started') {
         foreground.add(m.task_id);
         onTaskStarted?.();
-      } else if (m.subtype === 'task_updated' && (m as { patch?: { is_backgrounded?: boolean } }).patch?.is_backgrounded) foreground.delete(m.task_id);
-      else if (m.subtype === 'task_notification') foreground.delete(m.task_id);
+        pushTask(m.task_id, m.tool_use_id ?? null, 'running', { description: m.description, agentType: m.subagent_type ?? null, background: !!m.is_backgrounded });
+      } else if (m.subtype === 'task_progress') {
+        pushTask(m.task_id, m.tool_use_id ?? null, 'running', {
+          description: m.description, agentType: m.subagent_type ?? null, tools: m.usage?.tool_uses ?? null, tokens: m.usage?.total_tokens ?? null,
+          durationMs: m.usage?.duration_ms ?? null, lastTool: m.last_tool_name ?? null, progress: m.summary ?? null,
+        });
+      } else if (m.subtype === 'task_updated' && (m as { patch?: { is_backgrounded?: boolean } }).patch?.is_backgrounded) {
+        foreground.delete(m.task_id);
+        pushTask(m.task_id, (m as { tool_use_id?: string }).tool_use_id ?? null, 'running', { background: true });
+      } else if (m.subtype === 'task_notification') {
+        foreground.delete(m.task_id);
+        const status = m.status === 'completed' ? 'completed' : m.status === 'failed' ? 'failed' : 'stopped';
+        announced.add(`${m.task_id}:${status}`);
+        push({ kind: 'task_notice', taskId: m.task_id, toolUseId: m.tool_use_id ?? null, status, summary: m.summary, event: null });
+        pushTask(m.task_id, m.tool_use_id ?? null, m.status === 'completed' ? 'done' : m.status === 'failed' ? 'failed' : 'stopped', {
+          progress: m.summary, tools: m.usage?.tool_uses ?? null, tokens: m.usage?.total_tokens ?? null, durationMs: m.usage?.duration_ms ?? null,
+        });
+      }
       return;
     case 'assistant': {
       const stamped = [m.user_message_uuid, ...(m.user_message_uuids ?? [])].filter((u): u is string => !!u);
@@ -442,7 +490,7 @@ async function main(): Promise<void> {
     const chain = await findAndRead(c.agentSessionId);
     if (chain.total > chain.entries.length) push({ kind: 'resumed', messages: chain.total, shown: chain.entries.length });
     for (const m of chain.entries) {
-      if (m.type === 'compact') push({ kind: 'compact' }, true);
+      if (m.type === 'compact') push({ kind: 'compact', ...m.compact }, true);
       else fromMessage(m.type, m.message, m.parentToolUseId, true);
     }
     if (chain.total <= chain.entries.length) push({ kind: 'resumed', messages: chain.total });

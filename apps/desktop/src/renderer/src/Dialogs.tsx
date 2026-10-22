@@ -96,7 +96,13 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
   }, [agents]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [where, setWhere] = useState<'new' | 'same'>('new');
+  const [branch, setBranch] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const sessions = useStore((s) => s.snapshot?.sessions);
   const input = useRef<HTMLInputElement>(null);
+  /** Running sessions already in this checkout: a second one there shares its branch and files. */
+  const occupants = (path?: string) => (sessions ?? []).filter((x) => !x.external && x.status === 'running' && (x.worktree ?? x.repoRoot) === path);
 
   useEffect(() => {
     input.current?.focus();
@@ -124,14 +130,18 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
     const target = path ?? filtered[sel]?.path;
     if (!target || busy) return;
     setBusy(true);
+    setError(null);
     try {
       const richOk = def?.integration === 'claude';
+      const wt = occupants(target).length > 0 && where === 'new' && agent !== 'shell';
       const s = await rpc<SessionInfo>('sessions.create', {
         cwd: target, agent, model: def?.modelArgs ? model : null, name: name || null, mode: richOk ? mode : 'terminal',
+        worktree: wt ? { branch: branch.trim() || null } : null,
       });
       setState({ lastAgent: agent, lastModel: model, ...(richOk ? { lastMode: mode } : {}) });
       activate(s.id);
-    } catch {
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };
@@ -140,6 +150,8 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
     const dir = await window.jarvis.chooseDirectory();
     if (dir) void create(dir);
   };
+
+  const occupied = occupants(filtered[sel]?.path);
 
   return (
     <Modal wide>
@@ -167,6 +179,20 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
           </div>
         ))}
       </div>
+      {occupied.length > 0 && agent !== 'shell' && (
+        <div className="modal-row shared-note">
+          <Segmented label="Checkout" options={[{ value: 'new', label: 'New worktree' }, { value: 'same', label: 'Same checkout' }]}
+            value={where} onChange={(v) => setWhere(v as 'new' | 'same')} />
+          <span className="shared-why">
+            {occupied.length === 1 ? `“${occupied[0]!.name}” is` : `${occupied.length} sessions are`} already here{occupied[0]!.branch ? ` on ${occupied[0]!.branch}` : ''}.
+            {where === 'same' ? ' Both would share its branch and files.' : ' This one gets its own branch and folder.'}
+          </span>
+          {where === 'new' && (
+            <input className="modal-input small" placeholder="New branch (optional, default jarvis/…)" value={branch}
+              onChange={(e) => setBranch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void create()} />
+          )}
+        </div>
+      )}
       <div className="modal-row">
         <Segmented label="Agent" options={agentOptions} value={agent} onChange={setAgent} />
       </div>
@@ -194,6 +220,7 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
           {busy ? 'Starting…' : 'Start'} <kbd>↵</kbd>
         </button>
       </div>
+      {error && <div className="modal-error">{error}</div>}
       <div className="modal-hint">↑↓ pick · ⇥ fields · ←→ change option · ↵ start · esc cancel</div>
     </Modal>
   );
@@ -247,7 +274,7 @@ export function RenameDialog({ id }: { id: string }) {
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => input.current?.select(), []);
   const save = async () => {
-    if (name.trim()) await rpc('sessions.rename', { id, name: name.trim() });
+    await rpc('sessions.rename', { id, name: name.trim() });
     close();
   };
   return (
@@ -255,6 +282,11 @@ export function RenameDialog({ id }: { id: string }) {
       <div className="modal-title">Rename session</div>
       <input ref={input} className="modal-input" value={name} onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && void save()} />
+      {sess?.agent === 'claude' && (
+        <div className="modal-hint">
+          {sess.nameLocked ? 'Leave it empty to follow Claude’s own title for this conversation again.' : 'Now following Claude’s title for this conversation. Saving a name pins it.'}
+        </div>
+      )}
       <div className="modal-hint">↵ save · esc cancel</div>
     </Modal>
   );

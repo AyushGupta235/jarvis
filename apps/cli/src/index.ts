@@ -199,7 +199,7 @@ async function daemonCmd(sub: string | undefined): Promise<void> {
 const HELP = `jarvis - client for jarvisd
 
   jarvis ls [--all] [--json]          list sessions grouped by repo
-  jarvis new [dir] [--agent ID] [--model M] [--name N] [--rich] [--attach]
+  jarvis new [dir] [--agent ID] [--model M] [--name N] [--rich] [--worktree[=BRANCH]] [--attach]
   jarvis agents                       agents Jarvis can launch (built-in + ~/.jarvis/agents.json)
   jarvis attach <session>             attach in this terminal (tmux)
   jarvis send <session> <text...> [--no-enter]
@@ -237,7 +237,11 @@ async function main(): Promise<void> {
       return;
     }
     case 'new': {
+      // `--worktree dir` reads dir as the flag's value: a value that is a folder is the directory, not a branch.
+      let wt: string | true | undefined = flags.worktree;
+      if (typeof wt === 'string' && existsSync(resolve(wt))) { pos.unshift(wt); wt = true; }
       const s = await rpc('sessions.create', {
+        worktree: wt ? { branch: typeof wt === 'string' ? wt : null } : null,
         cwd: resolve(pos[0] ?? process.cwd()),
         agent: typeof flags.agent === 'string' ? flags.agent : 'claude',
         model: typeof flags.model === 'string' ? flags.model : null,

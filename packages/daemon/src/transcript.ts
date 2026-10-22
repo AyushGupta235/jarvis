@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { COMPACT_SUMMARY_PREFIX } from './notices';
 
 export interface ChainEntry {
   uuid: string;
@@ -7,6 +8,8 @@ export interface ChainEntry {
   message?: any;
   parentToolUseId: string | null;
   ts: number | null;
+  /** For a compaction marker: what Claude recorded about it. */
+  compact?: { trigger?: 'manual' | 'auto'; preTokens?: number; postTokens?: number; durationMs?: number };
 }
 
 export interface Chain {
@@ -21,10 +24,10 @@ export interface Chain {
 const COMMAND_ECHO = /^<(command-|local-command|system-reminder|task-notification)/;
 
 function promptText(content: unknown): string | null {
-  if (typeof content === 'string') return COMMAND_ECHO.test(content) ? null : content;
+  if (typeof content === 'string') return COMMAND_ECHO.test(content) || content.startsWith(COMPACT_SUMMARY_PREFIX) ? null : content;
   if (!Array.isArray(content) || content.some((b) => b?.type === 'tool_result')) return null;
   const t = content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n');
-  return t && !COMMAND_ECHO.test(t) ? t : null;
+  return t && !COMMAND_ECHO.test(t) && !t.startsWith(COMPACT_SUMMARY_PREFIX) ? t : null;
 }
 
 /**
@@ -54,7 +57,11 @@ export async function readChain(path: string, limit = 2500): Promise<Chain> {
       keep.set(r.uuid, { uuid: r.uuid, type: r.type, message: r.message, parentToolUseId: r.parent_tool_use_id ?? null, ts, isMeta: !!r.isMeta });
       newest = r.uuid;
     } else if (r.type === 'system' && r.subtype === 'compact_boundary') {
-      keep.set(r.uuid, { uuid: r.uuid, type: 'compact', parentToolUseId: null, ts });
+      const c = r.compactMetadata;
+      keep.set(r.uuid, {
+        uuid: r.uuid, type: 'compact', parentToolUseId: null, ts,
+        compact: c ? { trigger: c.trigger, preTokens: c.preTokens, postTokens: c.postTokens, durationMs: c.durationMs } : undefined,
+      });
     }
   }
   const walked: string[] = [];

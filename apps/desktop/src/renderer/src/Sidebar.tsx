@@ -142,6 +142,7 @@ function Row({ s, index, active, now }: { s: SessionInfo; index: number; active:
         <div className="row-title">
           <span className={`glyph ${s.agent}`}>{def?.glyph ?? s.agent.slice(0, 1)}</span>
           <span className="name">{s.name}</span>
+          {s.sharesCheckout && <span className="shared" title="Another session is in this same checkout, so the two share its branch and files. Start new ones in a worktree to keep them apart.">⇄</span>}
         </div>
         <div className={`row-meta ${act === 'needs_input' ? 'alert' : act === 'working' && a?.tool ? 'tool' : ''}`}>{meta}</div>
       </div>

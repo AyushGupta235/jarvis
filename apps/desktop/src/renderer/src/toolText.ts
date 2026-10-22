@@ -62,3 +62,19 @@ export function resolveLocalHref(href: string, cwd: string, home: string): { pat
   const path = h.startsWith('/') ? h : h.startsWith('~') ? home + h.slice(1) : `${cwd.replace(/\/$/, '')}/${h.replace(/^\.\//, '')}`;
   return { path: path.replace(/\/\.\//g, '/'), ...(line ? { line } : {}) };
 }
+
+/** One line describing a tool call, like the Activity tab. */
+export function toolLine(tool: string, input: unknown, cwd = ''): string {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  const one = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 220);
+  const home = window.jarvis.homeDir;
+  if (tool === 'Bash') return one(shortenCommand(str(i.command), cwd, home));
+  if (tool === 'Read' || tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit') return shortenPaths(str(i.file_path) || str(i.notebook_path), cwd, home);
+  if (tool === 'Grep' || tool === 'Glob') return `${str(i.pattern)}${i.path ? `  in ${shortenPaths(str(i.path), cwd, home)}` : ''}`;
+  if (tool === 'Agent' || tool === 'Task') return one(str(i.description) || str(i.prompt));
+  if (tool === 'WebFetch') return str(i.url);
+  if (tool === 'WebSearch') return str(i.query);
+  return one(JSON.stringify(input ?? {}));
+}
+

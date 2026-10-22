@@ -19,6 +19,13 @@ export interface SessionRow {
   mode: SessionMode;
   /** Rich sessions: the permission mode they started with, so revive keeps it. Null means your Claude settings. */
   permission_mode: string | null;
+  /** 1 once you named the session yourself (or passed a name): the auto-title from Claude then leaves it alone. */
+  name_locked: number;
+}
+
+/** Is this the name Jarvis gives a session on its own ("atlas", "atlas 2", "atlas shell 3") for a repo called `base`? */
+export function isPlaceholderName(name: string, base: string): boolean {
+  return new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( shell)?( \\d+)?$`).test(name);
 }
 
 const SCHEMA = `
@@ -38,7 +45,8 @@ create table if not exists sessions (
   exited_at integer,
   sort_order integer not null default 0,
   mode text not null default 'terminal',
-  permission_mode text
+  permission_mode text,
+  name_locked integer not null default 0
 );
 create table if not exists kv (
   key text primary key,
@@ -123,6 +131,15 @@ export class Db {
     }
     if (!cols('sessions').has('mode')) this.db.exec("alter table sessions add column mode text not null default 'terminal'");
     if (!cols('sessions').has('permission_mode')) this.db.exec('alter table sessions add column permission_mode text');
+    if (!cols('sessions').has('name_locked')) {
+      this.db.exec('alter table sessions add column name_locked integer not null default 0');
+      // Sessions named before auto-titles existed: a name that is not the placeholder was chosen by you, so keep it.
+      const rows = this.db.prepare('select id, name, repo_root, worktree from sessions').all() as { id: string; name: string; repo_root: string; worktree: string | null }[];
+      for (const r of rows) {
+        const base = (r.worktree ?? r.repo_root).split('/').filter(Boolean).pop() ?? '';
+        if (!isPlaceholderName(r.name, base)) this.db.prepare('update sessions set name_locked = 1 where id = ?').run(r.id);
+      }
+    }
     if (!cols('tool_seen').has('sample')) this.db.exec('alter table tool_seen add column sample text');
     if (!cols('usage_msgs').has('session')) {
       // New per-message fields: rebuild the usage index from scratch (it takes seconds).
@@ -143,11 +160,11 @@ export class Db {
     this.db
       .prepare(
         `insert into sessions (id, tmux_name, name, agent, model, agent_session_id, cwd, repo_root, worktree,
-          hidden, status, created_at, exited_at, sort_order, mode, permission_mode)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          hidden, status, created_at, exited_at, sort_order, mode, permission_mode, name_locked)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(r.id, r.tmux_name, r.name, r.agent, r.model, r.agent_session_id, r.cwd, r.repo_root, r.worktree,
-        r.hidden, r.status, r.created_at, r.exited_at, r.sort_order, r.mode, r.permission_mode);
+        r.hidden, r.status, r.created_at, r.exited_at, r.sort_order, r.mode, r.permission_mode, r.name_locked);
   }
 
   updateSession(id: string, patch: Partial<SessionRow>): void {
