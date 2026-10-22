@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion, SessionInfo } from '@jarvis/protocol';
+import type { RichContext, RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion, SessionInfo } from '@jarvis/protocol';
 import { ago, isLocalUrl, openInViewer, openPreview, rpc, sessionRoot, setState, useStore } from './store';
 import { Prose } from './ProseView';
+import { ContextPanel } from './ContextPanel';
 import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
 import { resolveLocalHref, shortenCommand, shortenPaths } from './toolText';
@@ -280,6 +281,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   const [draft, setDraft] = useState('');
   const [info, setInfo] = useState<RichInfo | null>(null);
   const [picker, setPicker] = useState<PickerState>(null);
+  const [context, setContext] = useState<RichContext | 'loading' | null>(null);
   const [paletteSel, setPaletteSel] = useState(0);
   const [paletteHidden, setPaletteHidden] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -331,6 +333,29 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     const el = box.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [events]);
+
+  // A hidden session loses its scroll offset, so on show: back to the bottom if you were following the
+  // conversation, else to where you were reading.
+  const savedTop = useRef(0);
+  const userScroll = useRef(0);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!visible || !el) return;
+    el.scrollTop = stick.current ? el.scrollHeight : savedTop.current;
+  }, [visible]);
+
+  // Content keeps growing after it renders (code highlighting, tables, images, loaded history). While you're
+  // following the conversation, stay pinned to the bottom as it does.
+  useEffect(() => {
+    const col = box.current?.firstElementChild;
+    if (!col) return;
+    const ro = new ResizeObserver(() => {
+      const el = box.current;
+      if (el && stick.current && visible) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(col);
+    return () => ro.disconnect();
+  }, [visible, look]);
 
   useEffect(() => {
     if (visible) requestAnimationFrame(() => input.current?.focus());
@@ -394,6 +419,14 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   };
 
   const openTerminal = async (command: string | null) => {
+    if (command === null) {
+      const ok = await window.jarvis.confirm(
+        'Open this conversation in a terminal?',
+        'The rich view closes and Claude Code reopens the same conversation in its own screen. Nothing is deleted; "rich view" in the title bar brings you back.',
+        'Open in terminal',
+      );
+      if (!ok) return;
+    }
     await rpc('sessions.switchMode', { id: session.id, mode: 'terminal', command }).catch(() => {});
   };
 
@@ -422,6 +455,23 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           onPick: (it) => {
             setPicker(null);
             if (!it.current) void rpc('rich.resume', { id: session.id, agentSessionId: it.key }).catch(() => {});
+          },
+        });
+        return;
+      }
+      case 'context':
+        await showContext();
+        return;
+      case 'rewind': {
+        setPicker({ title: 'Rewind: go back to before one of your prompts', items: null });
+        const pts = await rpc<{ uuid: string; text: string; ts: number | null; before: string | null }[]>('rich.rewindPoints', { id: session.id }).catch(() => []);
+        setPicker({
+          title: 'Rewind: go back to before one of your prompts (this makes a new conversation; the original stays in /resume)',
+          empty: 'No earlier prompts found.',
+          items: pts.filter((p) => p.before).map((p) => ({ key: p.before!, label: p.text.replace(/\s+/g, ' ').slice(0, 110), detail: p.ts ? `${ago(p.ts)} ago` : '' })),
+          onPick: (it) => {
+            setPicker(null);
+            void rpc('rich.rewind', { id: session.id, upToMessageId: it.key }).catch(() => {});
           },
         });
         return;
@@ -478,7 +528,13 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         break;
     }
     if (known?.kind === 'terminal') {
-      await openTerminal(text.trim());
+      // This swaps the session to Claude Code's own screen; ask first, and say what it does.
+      const ok = await window.jarvis.confirm(
+        `/${cmd.name} needs Claude Code's own screen`,
+        'Jarvis will reopen this conversation in a terminal and type the command there. Nothing is deleted. The terminal resumes the same conversation, and "rich view" in the title bar brings you back.',
+        'Open in terminal',
+      );
+      if (ok) await openTerminal(text.trim());
       return;
     }
     if (!cmd.args && PICKER_COMMANDS.has(cmd.name) && known) {
@@ -555,14 +611,31 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     if (local) openInViewer({ path: local.path, root: sessionRoot(session), mode: 'file', line: local.line });
   };
 
+  const showContext = async () => {
+    setPicker(null);
+    setContext('loading');
+    const r = await rpc<RichContext>('rich.context', { id: session.id }).catch(() => null);
+    setContext(r);
+  };
+
+  // Clicking the ctx chip in the title bar opens the same panel.
+  useEffect(() => {
+    const open = (e: Event) => {
+      if ((e as CustomEvent<{ id: string }>).detail.id === session.id) void showContext();
+    };
+    window.addEventListener('jarvis:context', open);
+    return () => window.removeEventListener('jarvis:context', open);
+  });
+
   /** Ctrl+B, as in Claude Code: move running tool calls to the background so Claude carries on. */
   const background = async () => {
     const r = await rpc<{ backgrounded: boolean }>('rich.background', { id: session.id }).catch(() => null);
     setNote(r?.backgrounded ? 'Moved the running task to the background' : 'Nothing running to background');
   };
 
+  const rows = useMemo(() => {
   let lastStatus = '';
-  const rows = events.map(({ seq, event: e, replay }) => {
+  return events.map(({ seq, event: e, replay }) => {
     const key = `${seq}`;
     const sub = 'parentToolUseId' in e && e.parentToolUseId ? ' rv-sub' : '';
     switch (e.kind) {
@@ -664,7 +737,9 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       case 'compact':
         return <div key={key} className="rv-sep">context compacted</div>;
       case 'resumed':
-        return <div key={key} className="rv-sep">resumed · {e.messages} messages from the transcript</div>;
+        return <div key={key} className="rv-sep">{e.shown && e.shown < e.messages
+          ? `resumed · showing the latest ${e.shown} of ${e.messages} messages (the rest are in the transcript)`
+          : `resumed · ${e.messages} messages from the transcript`}</div>;
       case 'error':
         return <div key={key} className="rv-error">{e.message}</div>;
       case 'ended':
@@ -673,7 +748,9 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         return null;
     }
   });
-
+  // Typing in the composer must not re-render the whole conversation (thousands of rows in a long history).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, density, ends, resolved, answersById, thinking, status, connected, session.cwd, session.id, queuedText]);
   return (
     <div className="rich-wrap" style={{ display: visible ? 'flex' : 'none' }} onMouseDown={() => picker && setPicker(null)}
       onKeyDown={(e) => {
@@ -682,6 +759,14 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           void background();
         }
       }}>
+      {session.rich?.outdated && (
+        <div className="rv-outdated">
+          <span>This session's helper process is from an older Jarvis, so newer features (questions, Ctrl+B, rewind, context) won't work in it.</span>
+          <button className="btn" disabled={working} title={working ? 'Wait for the current turn to finish' : 'Restart the helper on the same conversation'}
+            onClick={() => void rpc('rich.restart', { id: session.id }).catch(() => {})}>Restart session</button>
+          <span className="muted">Your conversation carries over.</span>
+        </div>
+      )}
       <div className="rv-topbar">
         <div className="seg small rv-density" title="How much thinking to show (⌥⌘T)">
           {DENSITIES.map((d) => (
@@ -690,10 +775,18 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           ))}
         </div>
       </div>
-      <div className="rv-scroll" ref={box} onClick={onProseClick} onScroll={(e) => {
-        const el = e.currentTarget;
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-      }}>
+      <div className="rv-scroll" ref={box} onClick={onProseClick}
+        onWheel={() => { userScroll.current = Date.now(); }} onPointerDown={() => { userScroll.current = Date.now(); }}
+        onKeyDown={() => { userScroll.current = Date.now(); }}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          if (!visible) return; // hiding a session fires a scroll to 0; that isn't you scrolling
+          // Following the conversation ends only when you scroll away yourself. Layout changes (resizing the
+          // window or a panel, content growing) move the scroll position too, and must not unpin the bottom.
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) stick.current = true;
+          else if (Date.now() - userScroll.current < 600) stick.current = false;
+          savedTop.current = el.scrollTop;
+        }}>
         <div className="rv-column" key={look}>
           {!events.length && <div className="rv-empty">{connected ? 'Send a message to start. Type / for commands.' : 'Connecting to the session…'}</div>}
           {workRuns(rows, events, ends, session.cwd).map((x) => (x && typeof x === 'object' && 'tools' in x
@@ -702,6 +795,8 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         </div>
       </div>
       <div className="rv-composer">
+        {context && <ContextPanel data={context} onClose={() => { setContext(null); input.current?.focus(); }}
+          onCompact={() => { setContext(null); void sendText('/compact'); }} />}
         {picker && <Picker {...picker} onClose={() => { setPicker(null); input.current?.focus(); }} />}
         {waiting.length > 0 && (
           <div className="rv-queue" title="Claude Code folds these in at its next step">

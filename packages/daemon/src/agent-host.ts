@@ -9,12 +9,15 @@
  * {requestId, behavior, message?}, close, and requests with a reqId (info, conversations, set_mode) that get
  * a reply {reqId, result | error}. Host ops: hello {pid, agentSessionId, seq}, events {list}, ev {env}, bye {reason}.
  */
-import { getSessionMessages, listSessions, query, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { forkSession, listSessions, query, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
+import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
+import { readChain, type Chain } from './transcript';
+import { findTranscript } from './thinking';
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { dirname } from 'node:path';
-import type { RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion } from '@jarvis/protocol';
+import type { RichContext, RichConversation, RichEnvelope, RichEvent, RichInfo, RichQuestion } from '@jarvis/protocol';
 import type { RichHostConfig, RichHostMeta } from '@jarvis/protocol/node';
 
 const cfg = JSON.parse(process.env.JARVIS_HOST_CONFIG ?? 'null') as RichHostConfig | null;
@@ -25,6 +28,16 @@ if (!cfg) {
 delete process.env.JARVIS_HOST_CONFIG;
 
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
+
+/** Test hook (e2e/rich-extras): when this marker file exists, act as an old host once, so that "restart" can be tested. */
+function reportedProto(): number {
+  const marker = process.env.JARVIS_TEST_OLD_HOST_MARKER;
+  if (marker && existsSync(marker)) {
+    try { unlinkSync(marker); } catch { /* gone */ }
+    return 0;
+  }
+  return RICH_HOST_PROTOCOL;
+}
 
 // ---- event log ----
 
@@ -247,7 +260,7 @@ function serve(): Promise<void> {
   if (existsSync(cfg!.socketPath)) unlinkSync(cfg!.socketPath);
   const server = createServer((c) => {
     clients.add(c);
-    send(c, { op: 'hello', pid: process.pid, agentSessionId: cfg!.agentSessionId, seq });
+    send(c, { op: 'hello', pid: process.pid, agentSessionId: cfg!.agentSessionId, seq, proto: reportedProto() });
     let buf = '';
     c.on('data', (d) => {
       buf += d.toString('utf8');
@@ -304,6 +317,9 @@ function handle(c: Socket, line: string): void {
       void shutdown('closed from Jarvis');
       return;
     case 'info':
+    case 'context':
+    case 'rewind_points':
+    case 'fork':
     case 'conversations':
     case 'set_mode':
     case 'background':
@@ -326,6 +342,16 @@ async function reportContext(): Promise<void> {
   }
 }
 
+async function findAndRead(sessionId: string): Promise<Chain> {
+  try {
+    const path = findTranscript(sessionId);
+    if (path) return await readChain(path);
+  } catch (e) {
+    log('could not read history', e);
+  }
+  return { entries: [], prompts: [], total: 0 };
+}
+
 async function request(op: string, msg: any): Promise<unknown> {
   switch (op) {
     case 'info':
@@ -337,6 +363,44 @@ async function request(op: string, msg: any): Promise<unknown> {
         firstPrompt: x.firstPrompt ?? null, lastModified: x.lastModified, sizeBytes: x.fileSize ?? null,
         branch: x.gitBranch ?? null, current: x.sessionId === currentSessionId,
       }));
+    }
+    case 'context': {
+      if (!q) throw new Error('the session has not started yet');
+      const u = await q.getContextUsage({ detail: 'full' });
+      const byServer = new Map<string, { tools: number; tokens: number }>();
+      for (const t of u.mcpTools) {
+        const x = byServer.get(t.serverName) ?? { tools: 0, tokens: 0 };
+        x.tools++;
+        x.tokens += t.tokens;
+        byServer.set(t.serverName, x);
+      }
+      const mb = u.messageBreakdown;
+      const top = (list: { name: string; tokens: number }[]) => list.sort((a, b) => b.tokens - a.tokens).slice(0, 8);
+      const out: RichContext = {
+        model: u.model, totalTokens: u.totalTokens, maxTokens: u.maxTokens, percentage: u.percentage,
+        autoCompactAt: u.isAutoCompactEnabled ? u.autoCompactThreshold ?? null : null,
+        categories: u.categories.map((c) => ({ id: c.id ?? c.name, name: c.name, tokens: c.tokens, kind: c.kind })),
+        mcp: [...byServer.entries()].map(([server, v]) => ({ server, ...v })).sort((a, b) => b.tokens - a.tokens),
+        memoryFiles: u.memoryFiles.map((m) => ({ path: m.path, type: m.type, tokens: m.tokens })),
+        agents: u.agents.map((a) => ({ name: a.agentType, source: a.source, tokens: a.tokens })).sort((a, b) => b.tokens - a.tokens),
+        skills: (u.skills?.skillFrontmatter ?? []).map((s) => ({ name: s.name, source: s.pluginName ?? s.source, tokens: s.tokens })).sort((a, b) => b.tokens - a.tokens),
+        messages: mb ? [
+          { label: 'Tool results', tokens: mb.toolResultTokens }, { label: 'Tool calls', tokens: mb.toolCallTokens },
+          { label: 'Claude replies', tokens: mb.assistantMessageTokens }, { label: 'Your messages', tokens: mb.userMessageTokens },
+          { label: 'Attachments', tokens: mb.attachmentTokens },
+        ].filter((m) => m.tokens > 0) : [],
+        topTools: mb ? top(mb.toolCallsByType.map((t) => ({ name: t.name, tokens: t.callTokens + t.resultTokens }))) : [],
+      };
+      return out;
+    }
+    case 'rewind_points': {
+      const chain = await findAndRead(currentSessionId);
+      return chain.prompts.slice(-80).reverse().map((p) => ({ uuid: p.uuid, text: p.text.slice(0, 400), ts: p.ts, before: p.before }));
+    }
+    case 'fork': {
+      // Copy the conversation up to (and including) one message into a new conversation; the original stays as it is.
+      const r = await forkSession(currentSessionId, { dir: cfg!.cwd, upToMessageId: String(msg.upToMessageId), title: msg.title ? String(msg.title) : undefined });
+      return { sessionId: r.sessionId };
     }
     case 'background':
       if (!q) throw new Error('the session has not started yet');
@@ -374,13 +438,14 @@ async function shutdown(reason: string, code = 0): Promise<void> {
 async function main(): Promise<void> {
   const c = cfg!;
   if (c.resume) {
-    // The conversation so far, from Claude's transcript, so a revived session shows its history.
-    const msgs = await getSessionMessages(c.agentSessionId, { dir: c.cwd }).catch((e) => {
-      log('could not read history', e);
-      return [];
-    });
-    for (const m of msgs) if (m.type === 'user' || m.type === 'assistant') fromMessage(m.type, m.message, m.parent_tool_use_id, true);
-    push({ kind: 'resumed', messages: msgs.length });
+    // The conversation so far, from Claude's transcript, so a revived session shows all of its history.
+    const chain = await findAndRead(c.agentSessionId);
+    if (chain.total > chain.entries.length) push({ kind: 'resumed', messages: chain.total, shown: chain.entries.length });
+    for (const m of chain.entries) {
+      if (m.type === 'compact') push({ kind: 'compact' }, true);
+      else fromMessage(m.type, m.message, m.parentToolUseId, true);
+    }
+    if (chain.total <= chain.entries.length) push({ kind: 'resumed', messages: chain.total });
   }
   await serve();
   writeMeta();

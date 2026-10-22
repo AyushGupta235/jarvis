@@ -46,12 +46,18 @@ export type SessionStatus = 'running' | 'exited';
 /** terminal: the agent's own TUI in tmux. rich: driven through the agent's SDK and drawn by Jarvis (RICH-VIEW.md). */
 export type SessionMode = 'terminal' | 'rich';
 
+/**
+ * Bumped whenever the rich session host (packages/daemon/src/agent-host.ts) gains something the app relies on.
+ * Hosts outlive app updates, so a session whose host reports an older number is offered a restart.
+ */
+export const RICH_HOST_PROTOCOL = 2;
+
 export interface SessionInfo {
   /** Stable short id. External sessions use `ext:<tmux name>`. */
   id: string;
   mode: SessionMode;
   /** Rich sessions: the host process and whether jarvisd is connected to it. */
-  rich: { hostPid: number | null; connected: boolean } | null;
+  rich: { hostPid: number | null; connected: boolean; outdated: boolean } | null;
   tmuxName: string;
   name: string;
   agent: AgentKind;
@@ -333,7 +339,7 @@ export type RichEvent =
   | { kind: 'status'; model: string | null; permissionMode: string | null; agentSessionId: string | null; cwd: string | null; authSource: string | null }
   | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null }
   | { kind: 'compact' }
-  | { kind: 'resumed'; messages: number }
+  | { kind: 'resumed'; messages: number; shown?: number }
   | { kind: 'error'; message: string }
   | { kind: 'ended'; reason: string };
 
@@ -366,6 +372,8 @@ export const SCREEN_ONLY_COMMANDS = [
 /** Commands the rich view handles itself, with what they do there. */
 export const NATIVE_RICH_COMMANDS: Record<string, string> = {
   resume: 'Switch to another conversation from this directory',
+  context: 'Show what is using the context window',
+  rewind: 'Go back to before one of your prompts, as a new conversation (the original is kept)',
   permissions: 'Change the permission mode',
   status: 'Model, account, version and connection details',
   copy: "Copy Claude's last reply",
@@ -399,6 +407,23 @@ export interface DevServer {
   cwd: string | null;
   /** Its process runs inside the session's repo. */
   inSession: boolean;
+}
+
+/** The context window, broken down for the context panel (trimmed from the SDK's report). */
+export interface RichContext {
+  model: string;
+  totalTokens: number;
+  maxTokens: number;
+  percentage: number;
+  /** Tokens at which Claude Code compacts by itself, when it is on. */
+  autoCompactAt: number | null;
+  categories: { id: string; name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred' }[];
+  mcp: { server: string; tools: number; tokens: number }[];
+  memoryFiles: { path: string; type: string; tokens: number }[];
+  agents: { name: string; source: string; tokens: number }[];
+  skills: { name: string; source: string; tokens: number }[];
+  messages: { label: string; tokens: number }[];
+  topTools: { name: string; tokens: number }[];
 }
 
 /** A past Claude conversation in the session's directory, for /resume. */
@@ -464,6 +489,13 @@ export interface RpcMethods {
   /** Ctrl+B: move running tool calls (long Bash commands) to the background so the turn continues. */
   'rich.background': [{ id: string }, { backgrounded: boolean }];
   'rich.answer': [{ id: string; requestId: string; answers: Record<string, string | string[]> }, { ok: true }];
+  /** /rewind: your recent prompts, newest first, with the message to fork at to rewind to just before each. */
+  'rich.rewindPoints': [{ id: string }, { uuid: string; text: string; ts: number | null; before: string | null }[]];
+  /** Rewind by forking: a new conversation up to that message, resumed in this session. The original is kept (see /resume). */
+  'rich.rewind': [{ id: string; upToMessageId: string }, SessionInfo];
+  'rich.context': [{ id: string }, RichContext];
+  /** Restart a session's host on the same conversation (picks up a newer host; nothing is lost). */
+  'rich.restart': [{ id: string }, SessionInfo];
   'rich.info': [{ id: string }, RichInfo];
   'rich.conversations': [{ id: string }, RichConversation[]];
   /** Switch the session to another conversation (restarts its host with that conversation resumed). */

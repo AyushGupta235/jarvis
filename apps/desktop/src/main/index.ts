@@ -100,6 +100,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('dialog:confirm', async (_e, message: string, detail: string, okLabel: string) => {
     if (!win) return false;
+    if (process.env.JARVIS_ASSUME_YES) return true; // end-to-end tests answer the sheet themselves
     const r = await dialog.showMessageBox(win, { type: 'warning', message, detail, buttons: [okLabel, 'Cancel'], defaultId: 0, cancelId: 1 });
     return r.response === 0;
   });

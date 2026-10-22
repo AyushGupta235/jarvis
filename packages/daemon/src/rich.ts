@@ -10,6 +10,8 @@ import { log, logError } from './log';
 interface Conn {
   sock: Socket;
   pid: number;
+  /** The host's protocol number (RICH_HOST_PROTOCOL); hosts from before it existed send none. */
+  proto: number;
   events: RichEnvelope[];
   seq: number;
   pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
@@ -64,6 +66,10 @@ export class RichSessions extends EventEmitter {
 
   hostPid(id: string): number | null {
     return this.conns.get(id)?.pid ?? this.meta(id)?.pid ?? null;
+  }
+
+  hostProto(id: string): number | null {
+    return this.conns.get(id)?.proto ?? null;
   }
 
   history(id: string): RichEnvelope[] {
@@ -148,7 +154,7 @@ export class RichSessions extends EventEmitter {
       const sock = connect(socketPath);
       let buf = '';
       let ready = false;
-      const conn: Conn = { sock, pid: 0, events: [], seq: 0, pending: new Map() };
+      const conn: Conn = { sock, pid: 0, proto: 0, events: [], seq: 0, pending: new Map() };
       sock.once('error', (e) => { if (!ready) reject(e); });
       sock.on('data', (d) => {
         buf += d.toString('utf8');
@@ -164,6 +170,7 @@ export class RichSessions extends EventEmitter {
           }
           if (m.op === 'hello') {
             conn.pid = m.pid;
+            conn.proto = typeof m.proto === 'number' ? m.proto : 0;
             sock.write(`${JSON.stringify({ op: 'sub', since: 0 })}\n`);
           } else if (m.op === 'events') {
             conn.events = m.list;

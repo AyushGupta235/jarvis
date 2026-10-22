@@ -30,7 +30,7 @@ const env = {
   ...process.env,
   JARVIS_HOME: join(tmp, 'home'), JARVIS_TMUX_SOCKET: SOCKET, JARVIS_REPO_ROOTS: join(tmp, 'repos'),
   JARVIS_USER_DATA: join(tmp, 'electron'), JARVIS_NO_EXTERNAL: '1', JARVIS_NO_PRS: '1', JARVIS_NO_USAGE: '1',
-  JARVIS_EXPORT_DIR: EXPORTS,
+  JARVIS_EXPORT_DIR: EXPORTS, JARVIS_ASSUME_YES: '1',
 };
 for (const k of Object.keys(env)) if (/^(CLAUDE|CLAUDECODE|TMUX|ANTHROPIC_API_KEY)/.test(k)) delete env[k];
 
@@ -127,10 +127,14 @@ try {
   await waitFor(async () => (await lastReply()).includes(WORD), 'first reply', 90_000);
 
   // 3. An SDK command whose output is markdown.
-  await soft('/context runs through the SDK and renders as a table', async () => {
+  await soft('/context opens the native context panel with the numbers, and closes with esc', async () => {
     await typeIn('/context');
     await win.press(`${V} .rv-input`, 'Enter');
-    await waitFor(() => win.evaluate((v) => document.querySelectorAll(`${v} .rv-text .prose table`).length > 0, V), '/context table', 30_000);
+    await win.waitForSelector(`${V} .cx .cx-bar`, { timeout: 30_000 });
+    const t = await win.locator(`${V} .cx`).innerText();
+    if (!/\d+% used/.test(t)) throw new Error(t.slice(0, 120));
+    await win.click(`${V} .cx .rv-picker-head .chip-btn`);
+    if (await win.locator(`${V} .cx`).count()) throw new Error('the panel did not close');
   });
 
   // 4. Markdown quality.
@@ -269,6 +273,35 @@ try {
     const t = await turnEnds();
     await send('What exact word did I ask you to reply with first? Reply with just that word.');
     await waitFor(async () => (await turnEnds()) > t && (await lastReply()).includes(WORD), 'recall after round trip', 90_000);
+  });
+
+  // 7b. /rewind forks instead of destroying: the original transcript is untouched and still resumable.
+  await soft('/rewind goes back to before a prompt as a new conversation and leaves the original intact', async () => {
+    // Conversation content only: Claude Code also appends bookkeeping lines (cost, mode) when a process closes.
+    const messageLines = (f) => readFileSync(f, 'utf8').split('\n').filter((l) => /"type":"(user|assistant)"/.test(l)).map((l) => JSON.parse(l).uuid);
+    const proj = join(homedir(), '.claude/projects');
+    const transcriptOf = (id) => readdirSync(proj).map((d) => join(proj, d, `${id}.jsonl`)).find(existsSync);
+    const orig = transcriptOf(firstId);
+    const before = messageLines(orig);
+    await send('/rewind');
+    await waitFor(async () => (await win.$$(`${V} .rv-pick:not(.muted)`)).length >= 2, 'rewind points', 20_000);
+    const idx = await win.evaluate((v) => [...document.querySelectorAll(`${v} .rv-pick`)].findIndex((e) => /Reply with exactly this markdown/.test(e.textContent)), V);
+    if (idx < 0) throw new Error('the markdown prompt is not offered as a rewind point');
+    await win.locator(`${V} .rv-pick`).nth(idx).click();
+    const forked = await waitFor(async () => {
+      const x = await sess(s.id);
+      return x.agentSessionId && x.agentSessionId !== firstId && x.rich?.connected ? x.agentSessionId : null;
+    }, 'the forked conversation', 60_000);
+    await waitFor(async () => (await win.evaluate((v) => document.querySelector(`${v} .rv-scroll`)?.innerText ?? '', V)).includes(WORD), 'history up to the rewind point', 15_000);
+    const shown = await win.evaluate((v) => document.querySelector(`${v} .rv-scroll`)?.innerText ?? '', V);
+    if (shown.includes('careful')) throw new Error('prompts after the rewind point are still shown');
+    const after = messageLines(orig);
+    if (after.length < before.length || before.some((u, i) => after[i] !== u)) throw new Error(`the original lost messages: ${before.length} -> ${after.length}`);
+    if (!transcriptOf(forked)) throw new Error('no transcript for the fork');
+    const t0 = await turnEnds();
+    await send('What exact word did I ask you to reply with first? Reply with just that word.');
+    await waitFor(async () => (await turnEnds()) > t0 && (await lastReply()).includes(WORD), 'recall in the fork', 90_000);
+    return `${firstId.slice(0, 8)} kept, continuing in ${forked.slice(0, 8)}`;
   });
 
   // 8. /exit stops it.

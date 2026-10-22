@@ -51,7 +51,10 @@ export function App() {
               {active.mode === 'rich' && <span className="chip rich" title="Driven through the Agent SDK and drawn by Jarvis">rich</span>}
               {active.mode === 'rich' && active.status === 'running' && (
                 <button className="chip no-drag" title="Reopen this conversation in Claude Code's own screen"
-                  onClick={() => void rpc('sessions.switchMode', { id: active.id, mode: 'terminal' }).catch(() => {})}>terminal ↗</button>
+                  onClick={async () => {
+                    const ok = await window.jarvis.confirm('Open this conversation in a terminal?', 'The rich view closes and Claude Code reopens the same conversation in its own screen. Nothing is deleted; "rich view" in the title bar brings you back.', 'Open in terminal');
+                    if (ok) void rpc('sessions.switchMode', { id: active.id, mode: 'terminal' }).catch(() => {});
+                  }}>terminal ↗</button>
               )}
               {active.mode === 'terminal' && !active.external && active.agent === 'claude' && active.status === 'running' && (
                 <button className="chip rich no-drag" title="Reopen this conversation in the rich view"
@@ -69,7 +72,10 @@ export function App() {
               })()}
               {a && <span className={`chip phase ${a.phase}`}>{a.phase === 'needs_input' ? 'needs you' : a.phase}</span>}
               {(a?.model || active.model) && <span className="chip model">{a?.model ?? active.model}</span>}
-              {pct != null && <span className={`chip ctx ${pct > 80 ? 'hot' : pct > 60 ? 'warm' : ''}`} title={`${fmtTokens(a?.context?.usedTokens)} / ${fmtTokens(a?.context?.windowTokens)} tokens`}>ctx {Math.round(pct)}%</span>}
+              {pct != null && (active.mode === 'rich'
+                ? <button className={`chip ctx no-drag ${pct > 80 ? 'hot' : pct > 60 ? 'warm' : ''}`} title={`${fmtTokens(a?.context?.usedTokens)} / ${fmtTokens(a?.context?.windowTokens)} tokens. Click for the breakdown`}
+                    onClick={() => window.dispatchEvent(new CustomEvent('jarvis:context', { detail: { id: active.id } }))}>ctx {Math.round(pct)}%</button>
+                : <span className={`chip ctx ${pct > 80 ? 'hot' : pct > 60 ? 'warm' : ''}`} title={`${fmtTokens(a?.context?.usedTokens)} / ${fmtTokens(a?.context?.windowTokens)} tokens`}>ctx {Math.round(pct)}%</span>)}
               {a?.costUsd != null && <span className="chip">{fmtUsd(a.costUsd)}</span>}
               <span className="tb-path">{tildify(active.currentPath || active.cwd)}</span>
             </>

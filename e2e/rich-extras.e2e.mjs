@@ -27,7 +27,7 @@ mkdirSync(ART, { recursive: true });
 const env = {
   ...process.env,
   JARVIS_HOME: join(tmp, 'home'), JARVIS_TMUX_SOCKET: SOCKET, JARVIS_REPO_ROOTS: join(tmp, 'repos'),
-  JARVIS_USER_DATA: join(tmp, 'electron'), JARVIS_NO_EXTERNAL: '1', JARVIS_NO_PRS: '1', JARVIS_NO_USAGE: '1',
+  JARVIS_USER_DATA: join(tmp, 'electron'), JARVIS_NO_EXTERNAL: '1', JARVIS_NO_PRS: '1', JARVIS_NO_USAGE: '1', JARVIS_TEST_OLD_HOST_MARKER: join(tmp, 'old-host'),
 };
 for (const k of Object.keys(env)) if (/^(CLAUDE|CLAUDECODE|TMUX|ANTHROPIC_API_KEY)/.test(k)) delete env[k];
 const repo = join(tmp, 'repos', 'atlas');
@@ -114,6 +114,24 @@ try {
     return `${pct.toFixed(1)}%`;
   });
 
+  // 2b. The context panel.
+  await soft('/context opens a real breakdown panel (not a text dump), and so does the ctx chip', async () => {
+    await send('/context');
+    await win.waitForSelector(`${V} .cx .cx-bar`, { timeout: 30_000 });
+    const t = await win.locator(`${V} .cx`).innerText();
+    if (!/\d+% used/.test(t) || !/System prompt/.test(t) || !/Messages/.test(t) || !/until auto-compact/.test(t)) throw new Error(t.replace(/\s+/g, ' ').slice(0, 200));
+    const noDump = await win.evaluate((v) => ![...document.querySelectorAll(`${v} .rv-text .prose table`)].some((x) => /Category/.test(x.textContent)), V);
+    if (!noDump) throw new Error('the old text table was rendered too');
+    await win.screenshot({ path: join(ART, 'extras-3-context.png') });
+    await win.click(`${V} .cx .rv-picker-head .chip-btn`);
+    await win.click('.titlebar button.chip.ctx');
+    await win.waitForSelector(`${V} .cx .cx-bar`, { timeout: 30_000 });
+    await win.locator(`${V} .cx .cx-group-head`).first().click();
+    if (await win.locator(`${V} .cx .cx-item`).count() < 1) throw new Error('groups do not expand');
+    await win.click(`${V} .cx .rv-picker-head .chip-btn`);
+    return t.replace(/\s+/g, ' ').slice(0, 70);
+  });
+
   // 3. Ctrl+B in the rich view.
   await soft('Ctrl+B moves a running command to the background and the turn carries on', async () => {
     const t0 = await turns();
@@ -159,6 +177,57 @@ try {
     return `answer used: ${reply.slice(0, 30)}`;
   });
 
+  // 4c. The chat opens at the bottom, not the top, after switching away and back.
+  await soft('switching away and back opens the chat at the bottom; scrolling up is remembered', async () => {
+    const other = await win.evaluate((cwd) => window.jarvis.rpc('sessions.create', { cwd, agent: 'shell', name: 'other' }), repo);
+    const gap = () => win.evaluate((v) => { const e = document.querySelector(`${v} .rv-scroll`); return { gap: e.scrollHeight - e.scrollTop - e.clientHeight, tall: e.scrollHeight - e.clientHeight, top: e.scrollTop }; }, V);
+    // A short window, so that the conversation is taller than the view.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ x: 40, y: 30, width: 1400, height: 520 }));
+    await sleep(500);
+    if ((await gap()).tall < 300) throw new Error('the conversation is not tall enough to test scrolling');
+    await win.click(`[data-id="${other.id}"]`);
+    await sleep(600);
+    await win.click(`[data-id="${s.id}"]`);
+    await sleep(600);
+    const a = await gap();
+    await sleep(1800);
+    const a2 = await gap();
+    if (a.gap > 60 || a2.gap > 60) throw new Error(`opened ${Math.round(a.gap)}px above the bottom, ${Math.round(a2.gap)}px two seconds later (scrollTop ${Math.round(a.top)} -> ${Math.round(a2.top)}, scrollable ${Math.round(a.tall)} -> ${Math.round(a2.tall)})`);
+    // Scroll up, switch away and back: it stays where you were reading.
+    const box = await win.locator(`${V} .rv-scroll`).boundingBox();
+    await win.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await win.mouse.wheel(0, -260); // a real scroll up, like a person's
+    await sleep(500);
+    const reading = (await gap()).top;
+    await win.click(`[data-id="${other.id}"]`);
+    await sleep(400);
+    await win.click(`[data-id="${s.id}"]`);
+    await sleep(600);
+    const b = await gap();
+    if (Math.abs(b.top - reading) > 40) throw new Error(`scrolled-up position lost: was ${Math.round(reading)}, now ${Math.round(b.top)}`);
+    await win.evaluate((v) => { const e = document.querySelector(`${v} .rv-scroll`); e.scrollTop = e.scrollHeight; }, V);
+    await sleep(300);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ x: 40, y: 30, width: 1400, height: 900 }));
+    return `at the bottom, then kept ${Math.round(b.top)}px when scrolled up`;
+  });
+
+  // 4d. A session whose helper process predates this build says so and can be restarted without losing anything.
+  await soft('an outdated helper shows a banner, and Restart keeps the conversation', async () => {
+    writeFileSync(join(tmp, 'old-host'), '');
+    const old = await win.evaluate((cwd) => window.jarvis.rpc('sessions.create', { cwd, agent: 'claude', model: 'haiku', mode: 'rich', name: 'oldhost' }), repo);
+    await win.click(`[data-id="${old.id}"]`);
+    await win.waitForSelector(`${V} .rv-outdated`, { timeout: 30_000 });
+    const t0 = await turns();
+    await send('Reply with exactly the word OLDHOST-REMEMBERS and nothing else.');
+    await waitFor(async () => (await turns()) > t0, 'a turn on the old host', 60_000);
+    const pidBefore = (await sess(old.id)).rich.hostPid;
+    await win.click(`${V} .rv-outdated .btn`);
+    await waitFor(async () => { const x = await sess(old.id); return x.rich?.connected && x.rich.hostPid !== pidBefore && !x.rich.outdated; }, 'a current host', 60_000);
+    if (await win.locator(`${V} .rv-outdated`).count()) throw new Error('the banner is still shown after the restart');
+    await waitFor(async () => (await win.evaluate((v) => document.querySelector(`${v} .rv-scroll`)?.innerText ?? '', V)).includes('OLDHOST-REMEMBERS'), 'history after restart', 20_000);
+    return `host ${pidBefore} -> ${(await sess(old.id)).rich.hostPid}`;
+  });
+
   // 5. Ctrl+B in a terminal Claude session goes to Claude Code, not tmux.
   await soft('Ctrl+B in a terminal Claude session reaches Claude Code (not swallowed by tmux)', async () => {
     const t = await win.evaluate((cwd) => window.jarvis.rpc('sessions.create', {
@@ -178,7 +247,7 @@ try {
     execFileSync('tmux', ['-L', SOCKET, 'send-keys', '-t', `=${t.tmuxName}:`, '-l', "Run this exact Bash command in the foreground: `python3 -c \"import time; time.sleep(40); print('late')\"`. If it gets moved to the background, don't wait for it: reply with just STARTED right away."]);
     await sleep(500); // an Enter right behind the text is taken as part of it
     execFileSync('tmux', ['-L', SOCKET, 'send-keys', '-t', `=${t.tmuxName}:`, 'Enter']);
-    await waitFor(() => /Running \d+ shell command|Bash\(python3/.test(cap()), 'the command running', 60_000, 500)
+    await waitFor(() => /ctrl\+b to run in background|Running \d+ shell command|Bash\(python3/i.test(cap()), 'the command running', 60_000, 400)
       .catch((e) => {
         console.log('---- terminal ----\n' + cap().split('\n').filter((l) => l.trim()).slice(-22).join('\n') + '\n----');
         throw e;

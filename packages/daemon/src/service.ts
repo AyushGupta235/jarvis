@@ -14,6 +14,7 @@ import type { Observers } from './observers';
 import type { CodexObserver } from './codex';
 import type { UsageIndexer } from './usage';
 import type { PrTracker, RemoteCache } from './prs';
+import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
 import type { RichSessions } from './rich';
 import { findTranscript, readThinking } from './thinking';
 import { FileWatcher, changes as fileChanges, diff as fileDiff, listFiles, readFile } from './files';
@@ -271,7 +272,7 @@ export class JarvisService extends EventEmitter {
     const running = isRich ? this.o.rich.connected(r.id) : !!l;
     return {
       mode: r.mode,
-      rich: isRich ? { hostPid: this.o.rich.hostPid(r.id), connected: running } : null,
+      rich: isRich ? { hostPid: this.o.rich.hostPid(r.id), connected: running, outdated: running && (this.o.rich.hostProto(r.id) ?? 0) < RICH_HOST_PROTOCOL } : null,
       id: r.id, tmuxName: r.tmux_name, name: r.name, agent: r.agent, model: r.model,
       agentSessionId: r.agent_session_id, cwd: r.cwd, currentPath: l?.currentPath ?? null,
       repoRoot: r.repo_root, worktree: r.worktree, branch: this.branches.get(path), hidden: !!r.hidden,
@@ -370,6 +371,28 @@ export class JarvisService extends EventEmitter {
 
   richAnswer(id: string, requestId: string, answers: Record<string, string | string[]>): void {
     this.o.rich.answer(id, requestId, answers);
+  }
+
+  /** Restart the host on the same conversation, so it runs this build's host code. */
+  async richRestart(id: string): Promise<SessionInfo> {
+    const r = this.row(id);
+    if (r.mode !== 'rich' || !r.agent_session_id) throw new Error('not a rich session');
+    return this.richResume(id, r.agent_session_id);
+  }
+
+  richContext(id: string): Promise<unknown> {
+    return this.o.rich.request(id, 'context', {}, 60_000);
+  }
+
+  richRewindPoints(id: string): Promise<unknown> {
+    return this.o.rich.request(id, 'rewind_points', {}, 60_000);
+  }
+
+  /** Fork the conversation at a message and continue in the fork. Nothing is deleted: the original stays resumable. */
+  async richRewind(id: string, upToMessageId: string): Promise<SessionInfo> {
+    const { sessionId } = await this.o.rich.request<{ sessionId: string }>(id, 'fork', { upToMessageId, title: undefined }, 120_000);
+    log(`rich ${id}: rewound by forking ${this.row(id).agent_session_id} -> ${sessionId}`);
+    return this.richResume(id, sessionId);
   }
 
   richBackground(id: string): Promise<{ backgrounded: boolean }> {
