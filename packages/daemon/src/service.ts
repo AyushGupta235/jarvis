@@ -161,6 +161,11 @@ export class JarvisService extends EventEmitter {
         o.observers.patch(id, { context: { usedPct: ev.usedPct, usedTokens: ev.usedTokens, windowTokens: ev.windowTokens } });
       }
       if (ev.kind === 'limits') o.observers.setClaudeLimits(ev);
+      if (ev.kind === 'turn_end' && typeof ev.sessionCostUsd === 'number') {
+        // Remember the running cost with its conversation, so a restart of the same conversation can price its first turn.
+        const r = o.db.getSession(id);
+        if (r?.agent_session_id) o.db.kvSet(`cost.${id}`, { sid: r.agent_session_id, total: ev.sessionCostUsd });
+      }
       if (ev.kind === 'task' && ev.agentType) {
         const m = this.richAgentTasks.get(id) ?? new Map<string, string>();
         m.set(ev.taskId, ev.state);
@@ -376,8 +381,10 @@ export class JarvisService extends EventEmitter {
 
   private async startRich(row: SessionRow, resume: boolean): Promise<void> {
     this.richAgentTasks.delete(row.id); // the new host replays what its agents did
+    const saved = this.o.db.kvGet(`cost.${row.id}`) as { sid: string; total: number } | null;
     await this.o.rich.start({
       id: row.id, cwd: row.cwd, agentSessionId: row.agent_session_id!, resume, model: row.model, permissionMode: row.permission_mode,
+      priorCostUsd: resume && saved?.sid === row.agent_session_id ? saved.total : null,
     });
   }
 

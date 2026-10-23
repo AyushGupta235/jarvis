@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
 import { readChain, type Chain } from './transcript';
+import { turnCost } from './cost';
 import { agentResultTask, agentStatsFromTranscript } from './subagents';
 import { COMPACT_SUMMARY_PREFIX, parseAgentMessage, parseLocalCommand, parseTaskNotification, userText } from './notices';
 import { findTranscript } from './thinking';
@@ -137,6 +138,9 @@ function liveAgentResult(message: any, result: unknown): void {
   if (t && t.state !== 'running') push(t);
 }
 
+/** The conversation's running cost at its last result (starts at what the previous host saw, if the conversation is the same). */
+let lastTotalCost: number | null = cfg?.priorCostUsd ?? null;
+
 /** Last time anything arrived from Claude; with the state below it tells a held queue that nothing is going to flush it. */
 let lastActivity = Date.now();
 
@@ -231,8 +235,12 @@ function onSdkMessage(m: SDKMessage): void {
       {
         const stopped = stopRequested && m.subtype !== 'success';
         stopRequested = false;
+        // The SDK reports the conversation's running total; what this turn cost is the step from the last one.
+        const total = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : null;
+        const cost = turnCost(total, lastTotalCost, cfg!.resume);
+        if (total != null) lastTotalCost = total;
         push({
-          kind: 'turn_end', ok: m.subtype === 'success' || stopped, durationMs: m.duration_ms ?? null, costUsd: m.total_cost_usd ?? null,
+          kind: 'turn_end', ok: m.subtype === 'success' || stopped, durationMs: m.duration_ms ?? null, costUsd: cost, sessionCostUsd: total,
           error: m.subtype === 'success' || stopped ? null : ('errors' in m && m.errors?.length ? m.errors.join('; ') : m.subtype),
           ...(stopped ? { stopped: true } : {}),
         });

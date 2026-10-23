@@ -348,7 +348,7 @@ export type RichEvent =
   | { kind: 'question_request'; requestId: string; questions: RichQuestion[]; agentId?: string | null }
   | { kind: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny'; answers?: Record<string, string | string[]> }
   | { kind: 'status'; model: string | null; permissionMode: string | null; agentSessionId: string | null; cwd: string | null; authSource: string | null }
-  | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null; stopped?: boolean }
+  | { kind: 'turn_end'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null; stopped?: boolean; /** The whole conversation's running cost (API prices) after this turn. */ sessionCostUsd?: number | null }
   /** Claude is summarising the conversation to free context. Ends with the `compact` that follows. */
   | { kind: 'compacting' }
   /** A `!` shell command you ran from the composer: it started, and how it ended. Its output arrives as `shell_out` chunks. */

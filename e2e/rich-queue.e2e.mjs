@@ -168,6 +168,34 @@ try {
     await waitFor(async () => (await text()).split(`AFTER-${tag}`).length > 2, 'the answer', 60_000);
     return 'held, then sent on request';
   });
+
+  await soft('a turn shows what it cost, not the whole conversation, even after a restart', async () => {
+    await idle();
+    const turnEnds = async () => (await rpc('rich.history', { id: s.id })).events.map((x) => x.event).filter((e) => e.kind === 'turn_end' && typeof e.sessionCostUsd === 'number');
+    const n0 = (await turnEnds()).length;
+    const t0 = await win.evaluate((v) => document.querySelectorAll(`${v} .rv-turn`).length, V);
+    await send('Reply with just COST-ONE.');
+    await waitFor(async () => (await turnEnds()).length > n0, 'a turn with a cost', 90_000);
+    await send('Reply with just COST-TWO.');
+    await waitFor(async () => (await turnEnds()).length > n0 + 1, 'the next turn', 90_000);
+    let ends = await turnEnds();
+    const [a, b] = ends.slice(-2);
+    if (!(b.sessionCostUsd > a.sessionCostUsd)) throw new Error(`the running total did not grow: ${a.sessionCostUsd} -> ${b.sessionCostUsd}`);
+    if (Math.abs(b.costUsd - (b.sessionCostUsd - a.sessionCostUsd)) > 1e-9) throw new Error(`turn cost ${b.costUsd} is not the step ${b.sessionCostUsd - a.sessionCostUsd}`);
+    if (b.costUsd >= b.sessionCostUsd) throw new Error('the turn cost is the whole conversation');
+    const shown = await win.evaluate((v) => [...document.querySelectorAll(`${v} .rv-turn`)].at(-1).innerText, V);
+    if (!/this turn/.test(shown)) throw new Error(`the line reads: ${shown}`);
+    // After a restart of the same conversation the first turn is still priced as a step, not as the running total.
+    await rpc('rich.restart', { id: s.id });
+    await waitFor(async () => /resumed/.test(await win.evaluate((v) => document.querySelector(`${v} .rv-scroll`).innerText, V)), 'history', 60_000);
+    await send('Reply with just COST-THREE.');
+    await waitFor(async () => (await turnEnds()).length > 0, 'the first turn of the new host', 90_000);
+    ends = await turnEnds();
+    const c = ends.at(-1);
+    if (c.costUsd == null) throw new Error('the first turn after the restart has no cost');
+    if (c.costUsd >= c.sessionCostUsd) throw new Error(`after the restart the turn cost ${c.costUsd} is the whole conversation ${c.sessionCostUsd}`);
+    return `turn ≈$${b.costUsd.toFixed(4)} of ≈$${b.sessionCostUsd.toFixed(4)}; after restart ≈$${c.costUsd.toFixed(4)}`;
+  });
 } catch (e) {
   console.error(e);
   check('run completed', false, e.message.split('\n')[0]);

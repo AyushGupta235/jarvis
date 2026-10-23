@@ -48,6 +48,8 @@ export interface RichHostConfig {
   claudePath: string | null;
   /** Jarvis's hook settings file, so the cockpit's observers see rich sessions like terminal ones. */
   settingsPath: string | null;
+  /** The conversation's running cost when the last host stopped, so the first turn after a restart can be priced. */
+  priorCostUsd?: number | null;
 }
 
 export interface RichHostMeta {

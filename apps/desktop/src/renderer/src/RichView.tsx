@@ -448,13 +448,14 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
     return () => window.removeEventListener('jarvis:quote', onQuote);
   }, [session.id]);
 
-  const { ends, resolved, answersById, lastReply, replies, status } = useMemo(() => {
+  const { ends, resolved, answersById, lastReply, replies, status, sessionCost } = useMemo(() => {
     const ends = new Map<string, Ev<'tool_end'>>();
     const resolved = new Map<string, 'allow' | 'deny'>();
     const answersById = new Map<string, Record<string, string | string[]>>();
     let lastReply = '';
     const replies: string[] = [];
     let status: Ev<'status'> | null = null;
+    let sessionCost: number | null = null;
     let turnText: string[] = [];
     for (const { event: e } of events) {
       if (e.kind === 'tool_end') ends.set(e.toolUseId, e);
@@ -467,13 +468,16 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       else if (e.kind === 'text' && !e.parentToolUseId) {
         turnText.push(e.text);
         lastReply = turnText.join('\n\n');
-      } else if (e.kind === 'turn_end' && turnText.length) {
-        replies.push(turnText.join('\n\n'));
-        turnText = [];
+      } else if (e.kind === 'turn_end') {
+        if (typeof e.sessionCostUsd === 'number') sessionCost = e.sessionCostUsd;
+        if (turnText.length) {
+          replies.push(turnText.join('\n\n'));
+          turnText = [];
+        }
       }
     }
     if (turnText.length) replies.push(turnText.join('\n\n'));
-    return { ends, resolved, answersById, lastReply, replies, status };
+    return { ends, resolved, answersById, lastReply, replies, status, sessionCost };
   }, [events]);
 
   const density = useStore((s) => s.richDensity);
@@ -850,6 +854,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
           ['Billing', authLabel(status?.authSource ?? a?.authSource ?? null)], ['Account', a?.email],
           ['Organization', a?.organization], ['Plan', a?.subscription], ['Claude Code', info?.version],
           ['Directory', session.cwd], ['Conversation', status?.agentSessionId ?? session.agentSessionId],
+          ['Cost so far (API prices)', sessionCost != null ? `≈$${sessionCost.toFixed(2)}${onPlan(status?.authSource ?? null) ? ' (counts against your plan, not billed)' : ''}` : null],
           ['Host process', session.rich?.hostPid ? String(session.rich.hostPid) : null],
         ];
         setPicker({ title: 'Status', items: rows.filter(([, v]) => v).map(([k, v]) => ({ key: k, label: k, detail: v! })) });
@@ -1129,14 +1134,16 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       }
       case 'turn_end': {
         const plan = onPlan(status?.authSource ?? null);
-        const cost = e.costUsd ? `$${e.costUsd.toFixed(2)}` : null;
+        const money = (n: number) => (n > 0 && n < 0.005 ? '<$0.01' : `$${n.toFixed(2)}`);
+        const cost = e.costUsd ? money(e.costUsd) : null;
+        const whole = e.sessionCostUsd ? ` The whole conversation so far: ≈${money(e.sessionCostUsd)}.` : '';
         return (
           <div key={key} className={`rv-turn${e.ok ? '' : ' err'}`}>
             {e.stopped ? 'stopped' : e.ok ? 'done' : `failed: ${e.error ?? 'unknown error'}`}
             {e.durationMs != null && ` · ${(e.durationMs / 1000).toFixed(1)}s`}
             {cost && (plan
-              ? <span title="What this turn would cost at API prices. On your plan it counts against your limits instead."> · ≈{cost} API equiv.</span>
-              : ` · ${cost}`)}
+              ? <span title={`What this turn alone would cost at API prices (Claude Code's own estimate). On your plan it counts against your limits instead.${whole}`}> · ≈{cost} this turn</span>
+              : <span title={`This turn's cost.${whole}`}> · {cost}</span>)}
           </div>
         );
       }

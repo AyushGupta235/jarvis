@@ -68,6 +68,7 @@ const soft = async (name, fn) => {
     check(name, true, typeof detail === 'string' ? detail : '');
   } catch (e) {
     check(name, false, e.message.split('\n')[0].slice(0, 200));
+    await win?.screenshot({ path: join(ART, `cmds-fail-${results.length}.png`) }).catch(() => {});
   }
 };
 

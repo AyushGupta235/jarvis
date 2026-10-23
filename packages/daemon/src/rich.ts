@@ -24,6 +24,7 @@ export interface RichStartOptions {
   resume: boolean;
   model: string | null;
   permissionMode: string | null;
+  priorCostUsd?: number | null;
 }
 
 function alive(pid: number): boolean {
@@ -114,7 +115,7 @@ export class RichSessions extends EventEmitter {
       resume: o.resume, model: o.model, permissionMode: o.permissionMode,
       // ~/.local/bin/claude is a symlink to the current version; resolve it so the SDK sees the real binary.
       claudePath: claude ? realpathSync(claude) : null,
-      settingsPath: this.extra.settingsPath,
+      settingsPath: this.extra.settingsPath, priorCostUsd: o.priorCostUsd ?? null,
     };
     const env: NodeJS.ProcessEnv = {
       ...(await this.hostEnv()),
