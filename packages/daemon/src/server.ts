@@ -33,6 +33,7 @@ export function buildHandlers(svc: JarvisService, shutdown: () => void): Record<
     'tmux.copyMode': async (p) => { await svc.copyMode(p.id); return { ok: true }; },
     'tmux.mouseState': (p) => svc.mouseState(p.id),
     'repos.list': () => svc.repos(),
+    'repos.complete': (p) => svc.completeRepos(String(p.prefix ?? '')),
     'agents.list': (p) => svc.agentsList(!!p?.refresh),
     'sessions.paste': async (p) => { await svc.paste(p.id, p.text); return { ok: true }; },
     'tmux.lastBuffer': (p) => svc.lastBuffer(p.id),

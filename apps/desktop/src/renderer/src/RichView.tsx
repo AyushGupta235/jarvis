@@ -173,12 +173,12 @@ function QuestionCard({ questions, disabled, from, onAnswer, onSkip }: {
 }
 
 /**
- * Messages you sent while Claude works, held in Jarvis until it is ready for them. Each can be edited, removed, or
- * sent now (which stops the current turn so Claude takes it straight away). Ones already handed to Claude are
- * shown dimmed until it reads them.
+ * Messages you sent while Claude works, held in Jarvis until Claude's next step. Each can be edited, removed, or
+ * sent now (handed to Claude at once, nothing is stopped). Once Claude has one it leaves the tray and is in the
+ * conversation.
  */
 function QueueTray({ items, paused, onAction }: {
-  items: { uuid: string; text: string; sent: boolean }[];
+  items: { uuid: string; text: string }[];
   paused: boolean;
   onAction: (uuid: string, action: 'edit' | 'remove' | 'sendNow', text?: string) => void;
 }) {
@@ -190,10 +190,10 @@ function QueueTray({ items, paused, onAction }: {
   return (
     <div className="rv-queue">
       <div className="rv-queue-title">
-        {paused ? 'Stopped · these are held until you send them' : 'Queued · held here until Claude is ready; edit, remove or send now'}
+        {paused ? 'Stopped · these are held until you send them' : 'Queued · Claude gets these at its next step'}
       </div>
       {items.map((it) => (
-        <div key={it.uuid} className={`rv-queue-item${it.sent ? ' sent' : ''}`}>
+        <div key={it.uuid} className="rv-queue-item">
           {editing?.uuid === it.uuid ? (
             <>
               <textarea className="rv-queue-edit" autoFocus rows={Math.min(8, Math.max(2, editing.text.split('\n').length))} value={editing.text}
@@ -210,13 +210,11 @@ function QueueTray({ items, paused, onAction }: {
           ) : (
             <>
               <span className="rv-queue-text">{it.text}</span>
-              {it.sent ? <span className="rv-queue-state">with Claude</span> : (
-                <span className="rv-queue-actions">
-                  <button className="chip-btn" title="Stop the current turn and send this now" onClick={() => onAction(it.uuid, 'sendNow')}>Send now</button>
-                  <button className="chip-btn" onClick={() => setEditing({ uuid: it.uuid, text: it.text })}>Edit</button>
-                  <button className="chip-btn" title="Remove from the queue" onClick={() => onAction(it.uuid, 'remove')}>✕</button>
-                </span>
-              )}
+              <span className="rv-queue-actions">
+                <button className="chip-btn" title="Give this to Claude now; it reads it at its next step. Nothing is stopped." onClick={() => onAction(it.uuid, 'sendNow')}>Send now</button>
+                <button className="chip-btn" onClick={() => setEditing({ uuid: it.uuid, text: it.text })}>Edit</button>
+                <button className="chip-btn" title="Remove from the queue" onClick={() => onAction(it.uuid, 'remove')}>✕</button>
+              </span>
             </>
           )}
         </div>
@@ -951,11 +949,10 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   const working = session.agentState?.phase === 'working';
   // Messages sent while Claude works wait in a tray (Jarvis holds them): their current text by uuid, which ones Claude
   // has been handed, which folded into the running turn, and whether you stopped Claude with some still held.
-  const { queuedText, waiting, foldedMid, pausedQueue } = useMemo(() => {
+  const { queuedText, waiting, pausedQueue } = useMemo(() => {
     const queuedText = new Map<string, string>();
     const gone = new Set<string>();
     const sent = new Set<string>();
-    const foldedMid = new Set<string>();
     let paused = false;
     for (const { event: e } of events) {
       if (e.kind === 'user' && e.queued && e.uuid) queuedText.set(e.uuid, e.text);
@@ -965,13 +962,12 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         else if (e.action === 'remove' && e.uuid) gone.add(e.uuid);
         else if (e.action === 'release' && e.uuid) {
           sent.add(e.uuid);
-          if (e.midTurn) foldedMid.add(e.uuid);
           paused = false;
         } else if (e.action === 'paused') paused = true;
       }
     }
-    const waiting = [...queuedText.entries()].filter(([u]) => !gone.has(u)).map(([uuid, text]) => ({ uuid, text, sent: sent.has(uuid) }));
-    return { queuedText, waiting, foldedMid, pausedQueue: paused && waiting.some((w) => !w.sent) };
+    const waiting = [...queuedText.entries()].filter(([u]) => !gone.has(u) && !sent.has(u)).map(([uuid, text]) => ({ uuid, text }));
+    return { queuedText, waiting, pausedQueue: paused && waiting.length > 0 };
   }, [events]);
   const workControls: WorkControls = {
     background: () => void background(),
@@ -1051,10 +1047,9 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         // Sent while Claude was working: it waits in the queue tray, and shows here once Claude reads it.
         if (e.queued && e.uuid) return null;
         return <UserMessage key={key} text={e.text} replay={!!replay} />;
-      case 'user_read':
-        return e.uuids.filter((u) => queuedText.has(u)).map((u) => (
-          <UserMessage key={`${key}-${u}`} text={queuedText.get(u)!} replay={false} tag={foldedMid.has(u) ? 'read mid-turn' : undefined} />
-        ));
+      case 'queue':
+        if (e.action !== 'release' || !e.uuid || !queuedText.has(e.uuid)) return null;
+        return <UserMessage key={key} text={queuedText.get(e.uuid)!} replay={false} tag={e.midTurn ? 'sent mid-turn' : undefined} />;
       case 'text':
         if (/^API Error:/.test(e.text)) return <div key={key} className="rv-apierr">{e.text.replace(/^API Error:\s*/, '')}</div>;
         return <Prose key={key} text={e.text} className={`rv-text${sub}`} />;
@@ -1185,7 +1180,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   });
   // Typing in the composer must not re-render the whole conversation (thousands of rows in a long history).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, density, ends, resolved, answersById, thinking, structure, agentCtx, taskStates, shellRuns, shellTick, status, connected, session.cwd, session.id, queuedText, foldedMid]);
+  }, [events, density, ends, resolved, answersById, thinking, structure, agentCtx, taskStates, shellRuns, shellTick, status, connected, session.cwd, session.id, queuedText]);
   return (
     <div className="rich-wrap" data-accent={accent || undefined}
       style={{ display: visible ? 'flex' : 'none', ...(accent && ACCENTS[accent] ? { ['--rv-accent' as string]: ACCENTS[accent] } : {}) }} onMouseDown={() => picker && setPicker(null)}

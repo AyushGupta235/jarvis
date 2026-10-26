@@ -134,20 +134,19 @@ try {
     return 'edited sent, removed never sent';
   });
 
-  await soft('Send now stops the turn and Claude takes that message straight away', async () => {
+  await soft('Send now hands the message over without stopping the running command', async () => {
     await idle();
-    const t0 = await turns();
-    const started = Date.now();
-    await send('Run this exact Bash command: python3 -c "import time; time.sleep(40)" and then reply with just SLOW-DONE.');
+    await send('Run this exact Bash command: python3 -c "import time; time.sleep(15); print(\'SLOW-OK\')" and then reply with just SLOW-DONE.');
     await win.waitForSelector(`${V} .rv-work .rv-dot.running, ${V} .rv-tool.running`, { timeout: 60_000 });
     await send(`Reply with just NOW-${tag}.`);
     await waitFor(async () => (await items()).length === 1, 'a held message', 8000);
     await win.click(`${V} .rv-queue-item >> button:has-text("Send now")`);
-    await waitFor(async () => (await text()).split(`NOW-${tag}`).length > 2, 'the answer', 60_000);
-    const took = Date.now() - started;
-    if (took > 50_000) throw new Error(`it waited for the slow command (${took} ms)`);
-    if ((await text()).split('SLOW-DONE').length > 2) throw new Error('the slow command ran to the end');
-    return `${Math.round(took / 1000)}s`;
+    await waitFor(async () => (await items()).length === 0, 'the tray to empty', 5000);
+    await idle();
+    const t = await text();
+    if (!t.includes('SLOW-DONE')) throw new Error('the running command was stopped');
+    if (t.split(`NOW-${tag}`).length < 3) throw new Error('Claude never answered it');
+    return 'command finished, message answered';
   });
 
   await soft('stopping Claude holds what is queued until you send it', async () => {

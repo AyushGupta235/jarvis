@@ -116,17 +116,41 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
     });
   }, [repoPath]);
 
-  const filtered = useMemo(
+  const fuzzy = useMemo(
     () => fuzzyFilter(repos ?? [], query, (r) => `${r.name} ${r.branch ?? ''} ${r.path}`).slice(0, 60),
     [repos, query],
   );
+  // A path (~/Doc, /Users/me/) lists the folders it could mean, anywhere on disk, and a folder that does not exist yet
+  // can be created.
+  const pathMode = /^[/~]/.test(query.trim());
+  const [typed, setTyped] = useState<{ dir: string; exists: boolean; entries: { path: string; name: string; git: boolean; branch: string | null }[] } | null>(null);
+  useEffect(() => {
+    if (!pathMode) return;
+    let alive = true;
+    const t = setTimeout(() => {
+      void rpc<NonNullable<typeof typed>>('repos.complete', { prefix: query.trim() }).then((r) => alive && setTyped(r)).catch(() => {});
+    }, 120);
+    return () => { alive = false; clearTimeout(t); };
+  }, [pathMode, query]);
+  type Shown = RepoCandidate & { create?: boolean };
+  const filtered: Shown[] = useMemo(() => {
+    if (!pathMode || !typed) return pathMode ? [] : fuzzy;
+    const list: Shown[] = typed.entries.map((e) => ({
+      path: e.path, name: e.name, repoRoot: e.path, branch: e.branch, isWorktree: false, lastUsed: null, folder: !e.git,
+    }));
+    const wanted = typed.dir;
+    if (!typed.exists && wanted && !list.some((x) => x.path === wanted)) {
+      list.push({ path: wanted, name: `Create “${tildify(wanted)}”`, repoRoot: wanted, branch: null, isWorktree: false, lastUsed: null, create: true });
+    }
+    return list;
+  }, [pathMode, typed, fuzzy]);
   const [sel, setSel, navKey] = useListNav(filtered.length);
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     listRef.current?.querySelector('.opt.sel')?.scrollIntoView({ block: 'nearest' });
   }, [sel]);
 
-  const create = async (path?: string) => {
+  const create = async (path?: string, makeIt?: boolean) => {
     const target = path ?? filtered[sel]?.path;
     if (!target || busy) return;
     setBusy(true);
@@ -137,6 +161,7 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
       const s = await rpc<SessionInfo>('sessions.create', {
         cwd: target, agent, model: def?.modelArgs ? model : null, name: name || null, mode: richOk ? mode : 'terminal',
         worktree: wt ? { branch: branch.trim() || null } : null,
+        mkdir: makeIt ?? !!(filtered[sel] as Shown | undefined)?.create,
       });
       setState({ lastAgent: agent, lastModel: model, ...(richOk ? { lastMode: mode } : {}) });
       activate(s.id);
@@ -159,20 +184,21 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
       <input
         ref={input}
         className="modal-input"
-        placeholder="Search repos and worktrees…"
+        placeholder="Search repos and folders, or type a path (~/ or /)…"
         value={query}
         onChange={(e) => { setQuery(e.target.value); setSel(0); }}
         onKeyDown={(e) => {
           if (navKey(e)) e.preventDefault();
+          else if (e.key === 'Tab' && pathMode && filtered[sel] && !(filtered[sel] as Shown).create) { e.preventDefault(); setQuery(`${filtered[sel]!.path.replace(window.jarvis.homeDir, '~')}/`); setSel(0); }
           else if (e.key === 'Enter') { e.preventDefault(); void create(); }
         }}
       />
       <div className="opt-list" ref={listRef}>
         {repos === null && <div className="opt muted">Loading repos…</div>}
-        {repos !== null && filtered.length === 0 && <div className="opt muted">No match. Use Browse to pick any folder.</div>}
+        {repos !== null && filtered.length === 0 && <div className="opt muted">{pathMode ? 'No folder there.' : 'No match. Type a path (~/ or /) or use Browse to pick any folder.'}</div>}
         {filtered.map((r, i) => (
-          <div key={r.path} className={`opt ${i === sel ? 'sel' : ''}`} onMouseMove={() => i !== sel && setSel(i)} onClick={() => void create(r.path)}>
-            <span className="opt-name">{r.isWorktree && <span className="tag">worktree</span>}{r.name}</span>
+          <div key={r.path} className={`opt ${i === sel ? 'sel' : ''}`} onMouseMove={() => i !== sel && setSel(i)} onClick={() => void create(r.path, (r as Shown).create)}>
+            <span className="opt-name">{r.isWorktree && <span className="tag">worktree</span>}{r.folder && !(r as Shown).create && <span className="tag">folder</span>}{r.name}</span>
             <span className="opt-branch">{r.branch}</span>
             <span className="opt-path">{tildify(r.path)}</span>
             <span className="opt-age">{r.lastUsed ? ago(r.lastUsed) : ''}</span>

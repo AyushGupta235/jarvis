@@ -170,7 +170,7 @@ function onSdkMessage(m: SDKMessage): void {
         if (m.state === 'running') turnActive = true;
         else if (m.state === 'idle') {
           turnActive = false;
-          for (const [, v] of unread) v.queued = false;
+          markRead([...unread.keys()]);
           if (held.length && !paused) releaseAll(false);
         }
       } else if (m.subtype === 'status') {
@@ -316,12 +316,13 @@ const unread = new Map<string, { sentAt: number; queued: boolean }>();
 
 /**
  * Messages sent while a turn runs wait here, in Jarvis, so you can edit one, remove one, or send one now. They go to
- * Claude when the turn ends ('turn-end', the default) or at its next tool boundary ('next-step', which is how Claude
- * Code's own terminal folds them in). Stopping a turn holds what is left until you decide.
+ * Claude at its next tool boundary ('next-step', the default, which is how Claude Code's own terminal folds them in)
+ * or when the turn ends ('turn-end'). Send now hands one over at once; it never stops the turn or its sub-agents.
+ * Stopping a turn holds what is left until you decide.
  */
 interface Held { uuid: string; text: string }
 const held: Held[] = [];
-const RELEASE: 'turn-end' | 'next-step' = process.env.JARVIS_QUEUE_RELEASE === 'next-step' ? 'next-step' : 'turn-end';
+const RELEASE: 'turn-end' | 'next-step' = process.env.JARVIS_QUEUE_RELEASE === 'turn-end' ? 'turn-end' : 'next-step';
 let paused = false;
 /** You pressed stop (or Send now) and the turn has not ended yet: its ending is not a failure. */
 let stopRequested = false;
@@ -353,14 +354,10 @@ function queueOp(op: string, msg: { uuid?: string; text?: string }): { ok: boole
     push({ kind: 'queue', action: 'remove', uuid: h.uuid });
     if (!held.length) paused = false;
   } else {
-    // Send now: this message goes first and the running turn is stopped so Claude gets to it straight away.
+    // Send now: Claude is handed it at once and reads it at its next step, as with a message typed in the terminal.
+    // Nothing is interrupted: stopping the turn would also stop its sub-agents.
     held.splice(i, 1);
-    const busy = turnActive;
-    release(h, false);
-    if (busy) {
-      stopRequested = true;
-      void q?.interrupt().catch((e) => log('interrupt failed', e));
-    }
+    release(h, turnActive);
     if (!held.length) paused = false;
   }
   return { ok: true };

@@ -301,6 +301,8 @@ export interface RepoCandidate {
   branch: string | null;
   isWorktree: boolean;
   lastUsed: number | null;
+  /** A plain folder, not a git repository. */
+  folder?: boolean;
 }
 
 export interface AttachSpec {
@@ -319,6 +321,8 @@ export interface CreateSessionParams {
   mode?: SessionMode;
   /** Rich sessions: starting permission mode (default: your Claude settings). */
   permissionMode?: RichPermissionMode | null;
+  /** Create the directory first if it does not exist (a path typed in the new-session picker). */
+  mkdir?: boolean;
   /** Start in a new git worktree (a new branch off the checkout's current commit) instead of the checkout itself. */
   worktree?: { branch?: string | null } | null;
 }
@@ -520,6 +524,8 @@ export interface RpcMethods {
   /** Whether the program in the active pane asked for mouse events (Claude Code's fullscreen TUI does, a shell doesn't). */
   'tmux.mouseState': [{ id: string }, { appMouse: boolean }];
   'repos.list': [void, RepoCandidate[]];
+  /** Folders matching a path being typed (~/Doc, /Users/me/code/), for the new-session picker. */
+  'repos.complete': [{ prefix: string }, { dir: string; exists: boolean; entries: { path: string; name: string; git: boolean; branch: string | null }[] }];
   'agents.list': [{ refresh?: boolean } | void, AgentDef[]];
   'sessions.paste': [{ id: string; text: string }, { ok: true }];
   'tmux.lastBuffer': [{ id: string }, { name: string | null; created: number | null; text: string | null }];

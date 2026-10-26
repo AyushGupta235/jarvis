@@ -26,6 +26,7 @@ import { Tmux, type LiveSession } from './tmux';
 import { BranchCache, createWorktree, listWorktrees, locate, scanRepos, slugify } from './git';
 import { TitleTracker } from './titles';
 import { readHooks } from './hooks';
+import { completeDirs, scanDirs } from './dirs';
 import { readAgentSteps } from './subagents';
 import { userShell } from './env';
 import { log, logError } from './log';
@@ -331,6 +332,7 @@ export class JarvisService extends EventEmitter {
 
   async create(p: CreateSessionParams): Promise<SessionInfo> {
     const cwd = p.cwd.replace(/^~(?=$|\/)/, homedir());
+    if (!existsSync(cwd) && p.mkdir) mkdirSync(cwd, { recursive: true });
     if (!existsSync(cwd)) throw new Error(`directory does not exist: ${cwd}`);
     const def = this.o.agents.get(p.agent);
     if (def.command && def.available === false) {
@@ -964,12 +966,26 @@ export class JarvisService extends EventEmitter {
     return list;
   }
 
+  /** Folders for a path being typed, with the branch of the ones that are repos. */
+  async completeRepos(prefix: string) {
+    const r = completeDirs(prefix);
+    const entries = await Promise.all(r.entries.map(async (e) => ({
+      path: e.path, name: basename(e.path), git: e.git, branch: e.git ? (await listWorktrees(e.path))[0]?.branch ?? null : null,
+    })));
+    return { dir: r.dir, exists: r.exists, entries };
+  }
+
   async repos(): Promise<RepoCandidate[]> {
     const lastUsed = this.o.db.lastUsedByCwd();
     const seen = new Set<string>();
     const out: RepoCandidate[] = [];
     const roots = new Set<string>();
-    for (const root of this.o.repoRoots) for (const p of scanRepos(root)) roots.add(p);
+    const folders = new Set<string>();
+    // Every folder under your roots is a place to start (a new one you just made too), and git repos are found one
+    // level down inside folders of repos. Home is scanned shallowly.
+    for (const root of this.o.repoRoots) {
+      for (const d of scanDirs(root, root !== homedir())) (d.git ? roots : folders).add(d.path);
+    }
     for (const r of this.o.db.allSessions()) if (existsSync(r.repo_root)) roots.add(r.repo_root);
     const lists = await Promise.all([...roots].map(async (repo) => ({ repo, wts: await listWorktrees(repo) })));
     for (const { repo, wts } of lists) {
@@ -985,11 +1001,16 @@ export class JarvisService extends EventEmitter {
         });
       }
     }
-    // Recently used non-git directories.
+    // Plain folders under your roots, then recently used directories that are not repos.
+    for (const p of folders) {
+      if (seen.has(p) || roots.has(p)) continue;
+      seen.add(p);
+      out.push({ path: p, name: basename(p), repoRoot: p, branch: null, isWorktree: false, lastUsed: lastUsed.get(p) ?? null, folder: true });
+    }
     for (const [cwd, t] of lastUsed) {
       if (!seen.has(cwd) && existsSync(cwd)) {
         seen.add(cwd);
-        out.push({ path: cwd, name: basename(cwd) || cwd, repoRoot: cwd, branch: null, isWorktree: false, lastUsed: t });
+        out.push({ path: cwd, name: basename(cwd) || cwd, repoRoot: cwd, branch: null, isWorktree: false, lastUsed: t, folder: true });
       }
     }
     out.sort((a, b) => (b.lastUsed ?? 0) - (a.lastUsed ?? 0) || Number(a.isWorktree) - Number(b.isWorktree) || a.name.localeCompare(b.name));
