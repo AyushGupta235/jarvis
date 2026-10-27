@@ -97,6 +97,21 @@ try {
   await win.click(`[data-id="${s.id}"]`);
   await win.waitForSelector(`${V} .rv-input:not([disabled])`, { timeout: 30000 });
 
+  await soft('an activity bar shows while Claude works: what it is doing, how long, and a Stop; it goes away when idle', async () => {
+    const bar = () => win.evaluate((v) => { const e = document.querySelector(`${v} .rv-activity`); return e ? e.innerText.replace(/\s+/g, ' ') : null; }, V);
+    if (await bar()) throw new Error(`a bar shows while idle: ${await bar()}`);
+    await send('Run the Bash command `sleep 9` and then reply with just BAR-DONE.');
+    await waitFor(async () => /Working|Thinking/.test((await bar()) ?? ''), 'the activity bar', 30_000);
+    await sleep(2500);
+    const t = await bar();
+    if (!/\d+s/.test(t)) throw new Error(`no elapsed time: ${t}`);
+    if (!/Stop/.test(t)) throw new Error(`no Stop: ${t}`);
+    await win.screenshot({ path: join(ART, 'activity-1-working.png') });
+    await idle(s.id);
+    await waitFor(async () => !(await bar()), 'the bar to go away', 10_000);
+    return t;
+  });
+
   await soft('Send now while a sub-agent runs does not stop it, and Claude answers once the agent is done', async () => {
     await send('Use the Agent tool (general-purpose, description "slow job") to run `python3 -c "import time; time.sleep(30)"` with Bash and then report SLOW-JOB-DONE. Wait for it and reply with its report.');
     await waitFor(async () => (await cards()).some((c) => /slow job/.test(c.head) && /running/.test(c.cls)), 'the running agent', 90_000);

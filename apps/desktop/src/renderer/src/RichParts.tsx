@@ -16,6 +16,48 @@ export function fmtDuration(ms: number): string {
   return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
+/**
+ * The one place that says whether anything is running: sits right above the input. A turn in progress shows a spinner,
+ * what Claude is doing, how long it has been going and a Stop button; work that carries on after the turn (background
+ * agents, `!` commands) keeps a quieter line of its own.
+ */
+export function ActivityBar({ phase, tool, startedAt, agents, background, shells, onStop }: {
+  phase: 'working' | 'needs_input' | 'compacting' | 'quiet';
+  tool: string | null;
+  startedAt: number | null;
+  agents: number;
+  background: number;
+  shells: number;
+  onStop: () => void;
+}) {
+  const [now, setNow] = useState(Date.now());
+  const live = phase !== 'quiet' || agents + background + shells > 0;
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [live]);
+  if (!live) return null;
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const label = phase === 'needs_input' ? 'Waiting for you' : phase === 'compacting' ? 'Compacting the conversation' : phase === 'working' ? (tool ? `Working · ${tool}` : 'Thinking') : 'Running in the background';
+  const parts = [
+    agents ? plural(agents, 'sub-agent') : '',
+    background ? plural(background, 'background task') : '',
+    shells ? plural(shells, 'command') : '',
+  ].filter(Boolean);
+  return (
+    <div className={`rv-activity ${phase}`} role="status" aria-live="polite">
+      {phase === 'needs_input' ? <span className="rv-activity-ask">!</span> : phase === 'quiet' ? <i className="dot idle" /> : <span className="spin" />}
+      <span className="rv-activity-label">{label}</span>
+      {phase !== 'quiet' && startedAt != null && <span className="rv-activity-time">{fmtDuration(Math.max(0, now - startedAt))}</span>}
+      {parts.length > 0 && <span className="rv-activity-more">{parts.join(' · ')}</span>}
+      <span className="strip-spacer" />
+      {phase === 'working' && <button className="chip-btn" title="Stop this turn" onClick={onStop}>Stop <kbd>esc</kbd></button>}
+    </div>
+  );
+}
+
 const LONG_LINES = 10;
 const LONG_CHARS = 900;
 

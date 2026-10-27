@@ -7,7 +7,7 @@ import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
 import { resolveLocalHref, toolLine } from './toolText';
 import { DENSITIES } from '../../shared/themes';
-import { AgentCard, type AgentCtx, BtwCard, RunAgentPanel, ShellCard, agentRequest, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, fmtDuration, isAgentTool, taskByTool } from './RichParts';
+import { ActivityBar, AgentCard, type AgentCtx, BtwCard, RunAgentPanel, ShellCard, agentRequest, CompactMarker, CompactSummary, Compacting, TaskNotices, UserMessage, fmtDuration, isAgentTool, taskByTool } from './RichParts';
 import {
   EFFORT_LEVELS, PERMISSION_MODES, PICKER_COMMANDS, canonicalName, commandCatalog, matchCommands, parseCommand, type Command,
 } from './richCommands';
@@ -947,6 +947,23 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   const respond = (requestId: string, behavior: 'allow' | 'deny') =>
     void rpc('rich.respond', { id: session.id, requestId, behavior }).catch(() => {});
   const working = session.agentState?.phase === 'working';
+  // What is running right now, for the activity bar: the turn (and since when), sub-agents, background tasks, `!` commands.
+  const activity = useMemo(() => {
+    let startedAt: number | null = null;
+    for (const { ts, event: e } of events) {
+      if (e.kind === 'turn_end') startedAt = null;
+      else if (startedAt == null && (e.kind === 'user' || e.kind === 'text' || e.kind === 'tool_use' || e.kind === 'thinking')) startedAt = ts;
+    }
+    const phase = session.agentState?.phase;
+    const running = [...taskStates.values()].filter((t) => t.state === 'running');
+    return {
+      phase: (phase === 'working' || phase === 'needs_input' || phase === 'compacting' ? phase : 'quiet') as 'working' | 'needs_input' | 'compacting' | 'quiet',
+      startedAt: phase === 'working' || phase === 'needs_input' || phase === 'compacting' ? startedAt : null,
+      agents: running.filter((t) => !t.background && t.agentType != null).length,
+      background: running.filter((t) => t.background).length,
+      shells: [...shellRuns.values()].filter((r) => r.state === 'running').length,
+    };
+  }, [events, taskStates, shellRuns, session.agentState?.phase]);
   // Messages sent while Claude works wait in a tray (Jarvis holds them): their current text by uuid, which ones Claude
   // has been handed, which folded into the running turn, and whether you stopped Claude with some still held.
   const { queuedText, waiting, pausedQueue } = useMemo(() => {
@@ -1252,6 +1269,8 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
             ))}
           </div>
         )}
+        <ActivityBar phase={activity.phase} tool={session.agentState?.tool ?? null} startedAt={activity.startedAt} agents={activity.agents}
+          background={activity.background} shells={activity.shells} onStop={() => void rpc('rich.interrupt', { id: session.id }).catch(() => {})} />
         <textarea
           ref={input}
           className={`rv-input${draft.startsWith('!') ? ' shell' : ''}`}
@@ -1289,7 +1308,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         />
         <div className="rv-composer-bar">
           {draft.startsWith('!') && <span className="rv-shellmode">shell · runs in {session.cwd.replace(window.jarvis.homeDir, '~')} · ↵ run · esc cancel</span>}
-          <span className="muted">{working ? `working${session.agentState?.tool ? `: ${session.agentState.tool}` : ''}` : connected ? 'ready' : 'disconnected'}</span>
+          <span className="muted">{working ? '' : connected ? 'ready' : 'disconnected'}</span>
           {note && <span className="rv-toast">{note}</span>}
           <span className="strip-spacer" />
           <button className="chip-btn" disabled={!connected} title="Run a sub-agent: pick its kind and give it a task" onClick={() => void runCommand('/agent')}>Agent</button>
