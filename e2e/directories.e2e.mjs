@@ -136,6 +136,44 @@ try {
     if (!existsSync(dir)) throw new Error('the folder was not created');
     return s.cwd.replace(tmp, '…');
   });
+
+  await soft('a second session in a plain folder starts there; no worktree is offered (there is no repo)', async () => {
+    const fresh = join(code, 'fresh');
+    await rpc('sessions.create', { cwd: fresh, agent: 'shell', mode: 'terminal', name: 'first' });
+    await openDialog();
+    await win.fill('.modal .modal-input', `${code}/fr`);
+    await waitFor(async () => (await names()).includes('fresh'), 'the folder', 5000);
+    await win.click('.seg-btn:text-is("Claude")');
+    await sleep(400);
+    if (await win.$('.modal .shared-note')) throw new Error('a Checkout choice is offered for a plain folder');
+    await win.click('.seg-btn:text-is("Terminal")');
+    await win.press('.modal .modal-input', 'Enter');
+    await waitFor(async () => (await rpc('snapshot')).sessions.filter((x) => x.cwd === fresh).length === 2, 'the second session', 15_000);
+    if (await win.$('.modal-error')) throw new Error('an error showed');
+    return 'two sessions in the folder';
+  });
+
+  await soft('clicking a folder selects it and waits; Start (or a double-click) begins the session', async () => {
+    await openDialog();
+    await win.fill('.modal .modal-input', `${code}/`);
+    await waitFor(async () => (await names()).includes('brandnew'), 'the folders', 5000);
+    const before = (await rpc('snapshot')).sessions.length;
+    await win.click('.seg-btn:text-is("Shell")');
+    await win.click('.modal .opt:has-text("brandnew")');
+    await sleep(1500);
+    if ((await rpc('snapshot')).sessions.length !== before) throw new Error('a single click started a session');
+    const sel = await win.evaluate(() => document.querySelector('.modal .opt.sel .opt-name')?.textContent ?? '');
+    if (!/brandnew/.test(sel)) throw new Error(`selected: ${sel}`);
+    await win.click('.modal .btn.primary');
+    await waitFor(async () => (await rpc('snapshot')).sessions.some((x) => x.cwd === join(code, 'brandnew')), 'the session', 15_000);
+    await openDialog();
+    await win.fill('.modal .modal-input', `${code}/`);
+    await waitFor(async () => (await names()).includes('fresh'), 'the folders', 5000);
+    const n = (await rpc('snapshot')).sessions.length;
+    await win.dblclick('.modal .opt:has-text("fresh")');
+    await waitFor(async () => (await rpc('snapshot')).sessions.length === n + 1, 'a double-click to start', 15_000);
+    return 'click selects, Start and double-click begin';
+  });
 } catch (e) {
   console.error(e);
   check('run completed', false, e.message.split('\n')[0]);

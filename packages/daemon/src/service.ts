@@ -343,8 +343,8 @@ export class JarvisService extends EventEmitter {
     let loc = await locate(cwd);
     const id = shortId();
     let startDir = cwd;
-    if (p.worktree) {
-      if (!loc.toplevel) throw new Error('a worktree needs a git repository');
+    // A worktree is a preference: a folder that is not a git repository just opens in place.
+    if (p.worktree && loc.toplevel) {
       const wanted = (p.worktree.branch || '').trim() || `jarvis/${slugify(p.name || '') === 'session' ? id : slugify(p.name!)}`;
       const wt = await createWorktree(loc.toplevel, loc.repoRoot, wanted, dirname(this.o.socketPath));
       // Start where the checkout was pointed, but inside the new worktree (a subfolder keeps its relative path).

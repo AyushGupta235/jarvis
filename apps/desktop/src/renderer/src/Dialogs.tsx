@@ -103,6 +103,8 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
   const input = useRef<HTMLInputElement>(null);
   /** Running sessions already in this checkout: a second one there shares its branch and files. */
   const occupants = (path?: string) => (sessions ?? []).filter((x) => !x.external && x.status === 'running' && (x.worktree ?? x.repoRoot) === path);
+  /** Worktrees are a git thing: a plain folder has no checkout to branch from. */
+  const isRepo = (path?: string) => !!path && !(filtered.find((r) => r.path === path)?.folder);
 
   useEffect(() => {
     input.current?.focus();
@@ -157,7 +159,7 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
     setError(null);
     try {
       const richOk = def?.integration === 'claude';
-      const wt = occupants(target).length > 0 && where === 'new' && agent !== 'shell';
+      const wt = isRepo(target) && occupants(target).length > 0 && where === 'new' && agent !== 'shell';
       const s = await rpc<SessionInfo>('sessions.create', {
         cwd: target, agent, model: def?.modelArgs ? model : null, name: name || null, mode: richOk ? mode : 'terminal',
         worktree: wt ? { branch: branch.trim() || null } : null,
@@ -172,11 +174,19 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
   };
 
   const browse = async () => {
+    // Picking a folder only selects it: you still choose the agent and options, then Start.
     const dir = await window.jarvis.chooseDirectory();
-    if (dir) void create(dir);
+    if (dir) { setQuery(dir.replace(window.jarvis.homeDir, '~')); setSel(0); setPicked(dir); input.current?.focus(); }
   };
+  const [picked, setPicked] = useState<string | null>(null);
+  useEffect(() => {
+    // After Browse, the folder it chose is the highlighted row (a prefix can also match its siblings).
+    if (!picked) return;
+    const i = filtered.findIndex((r) => r.path === picked);
+    if (i >= 0) { setSel(i); setPicked(null); }
+  }, [picked, filtered, setSel]);
 
-  const occupied = occupants(filtered[sel]?.path);
+  const occupied = isRepo(filtered[sel]?.path) ? occupants(filtered[sel]?.path) : [];
 
   return (
     <Modal wide>
@@ -197,7 +207,7 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
         {repos === null && <div className="opt muted">Loading repos…</div>}
         {repos !== null && filtered.length === 0 && <div className="opt muted">{pathMode ? 'No folder there.' : 'No match. Type a path (~/ or /) or use Browse to pick any folder.'}</div>}
         {filtered.map((r, i) => (
-          <div key={r.path} className={`opt ${i === sel ? 'sel' : ''}`} onMouseMove={() => i !== sel && setSel(i)} onClick={() => void create(r.path, (r as Shown).create)}>
+          <div key={r.path} className={`opt ${i === sel ? 'sel' : ''}`} onMouseMove={() => i !== sel && setSel(i)} onClick={() => { setSel(i); input.current?.focus(); }} onDoubleClick={() => void create(r.path, (r as Shown).create)}>
             <span className="opt-name">{r.isWorktree && <span className="tag">worktree</span>}{r.folder && !(r as Shown).create && <span className="tag">folder</span>}{r.name}</span>
             <span className="opt-branch">{r.branch}</span>
             <span className="opt-path">{tildify(r.path)}</span>
@@ -247,7 +257,7 @@ export function NewSessionDialog({ repoPath }: { repoPath?: string }) {
         </button>
       </div>
       {error && <div className="modal-error">{error}</div>}
-      <div className="modal-hint">↑↓ pick · ⇥ fields · ←→ change option · ↵ start · esc cancel</div>
+      <div className="modal-hint">↑↓ pick · click selects · ⇥ fields · ←→ change option · ↵ or double-click starts · esc cancel</div>
     </Modal>
   );
 }
