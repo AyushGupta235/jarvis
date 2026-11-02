@@ -55,7 +55,9 @@ async function main(): Promise<void> {
   const files = new FileWatcher();
   // The host bundle sits next to jarvisd.cjs (dist/ in the repo, Resources/ in the app bundle).
   const rich = new RichSessions(home, join(__dirname, 'jarvis-agent-host.mjs'), () => loginEnv(env), {
-    claudePath: () => agents.list().find((a) => a.id === 'claude')?.path ?? findBinary('claude', env),
+    // Resolved the way your terminal does (login shell PATH), and only once detection has run: launchd starts jarvisd with
+    // a bare PATH where an old Homebrew claude can come first, and a host on that binary dies on flags the SDK passes.
+    claudePath: async () => (await agents.refresh()).find((a) => a.id === 'claude')?.path ?? findBinary('claude', await loginEnv(env)) ?? findBinary('claude', env),
     settingsPath: integration.claudeSettings,
     daemonSocket: socketPath,
   });

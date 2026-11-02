@@ -50,7 +50,7 @@ export class RichSessions extends EventEmitter {
     private readonly hostScript: string,
     /** Environment for hosts: your login shell's, so Bash tool calls and hooks see the same PATH as a terminal. */
     private readonly hostEnv: () => Promise<NodeJS.ProcessEnv>,
-    private readonly extra: { claudePath: () => string | null; settingsPath: string | null; daemonSocket: string },
+    private readonly extra: { claudePath: () => Promise<string | null>; settingsPath: string | null; daemonSocket: string },
   ) {
     super();
     this.dir = join(home, 'rich');
@@ -109,7 +109,7 @@ export class RichSessions extends EventEmitter {
       return;
     }
     const socketPath = richSocketPath(o.id);
-    const claude = this.extra.claudePath();
+    const claude = await this.extra.claudePath();
     const cfg: RichHostConfig = {
       id: o.id, socketPath, metaPath: this.metaPath(o.id), cwd: o.cwd, agentSessionId: o.agentSessionId,
       resume: o.resume, model: o.model, permissionMode: o.permissionMode,
