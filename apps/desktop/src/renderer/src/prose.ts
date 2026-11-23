@@ -1,5 +1,6 @@
 import MarkdownIt, { type Token } from 'markdown-it';
 import { escapeHtml, highlightBlock } from './highlight';
+import { rpc } from './store';
 
 /**
  * Markdown for agent replies in the rich view. Built for reading rather than a plain render: code blocks
@@ -55,12 +56,15 @@ md.renderer.rules.table_close = () => '</table></div>';
 
 /** Looks like a file path (with an extension or a slash), optionally with :line. */
 const PATH_RE = /^(?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)*[\w.@+-]+\.[A-Za-z0-9]{1,10}(?::\d+(?::\d+)?)?$|^(?:~|\.{1,2})?\/(?:[\w.@+-]+\/)*[\w.@+-]+\/?$/;
+/** Also: dotfiles (.env, .env.local, config/.env, ~/.zshrc), a name inside a folder, and the well-known extensionless names. */
+const CAND_RE = new RegExp(`${PATH_RE.source}|^(?:~|\\.{1,2})?\\/?(?:[\\w.@+-]+\\/)*\\.[\\w@+-][\\w.@+-]*(?::\\d+(?::\\d+)?)?$|^(?:~|\\.{1,2})?\\/?(?:[\\w.@+-]+\\/)+[\\w@+-][\\w.@+-]*(?::\\d+(?::\\d+)?)?$|^(?:Dockerfile|Makefile|Procfile|Gemfile|Rakefile|LICENSE|README|CHANGELOG)$`);
+const isCandidate = (c: string) => CAND_RE.test(c) && !/^\d+(\.\d+)*$/.test(c) && !c.includes('://') && !/^(?:e\.g|i\.e|etc|vs)\.?$/i.test(c);
 
+// A path in `code` is only a candidate here: enhanceProse checks the file exists (wherever the agent is working)
+// before making it a link, so nothing clickable leads to "file not found".
 md.renderer.rules.code_inline = (tokens, idx) => {
   const c = tokens[idx]!.content;
-  if (PATH_RE.test(c) && !/^\d+(\.\d+)*$/.test(c)) {
-    return `<code class="pc-path" data-path="${escapeHtml(c)}" title="Open in the viewer">${escapeHtml(c)}</code>`;
-  }
+  if (isCandidate(c)) return `<code class="pc-cand" data-cand="${escapeHtml(c)}">${escapeHtml(c)}</code>`;
   return `<code>${escapeHtml(c)}</code>`;
 };
 
@@ -107,6 +111,74 @@ function stripPrefix(inline: Token, n: number): void {
   while (kids.length && ((kids[0]!.type === 'text' && !kids[0]!.content) || kids[0]!.type === 'softbreak')) kids.shift();
 }
 
+const refCache = new Map<string, string>();
+const split = (ref: string): { file: string; suffix: string } => {
+  const m = /^(.*?)((?::\d+){1,2})$/.exec(ref);
+  return m ? { file: m[1]!, suffix: m[2]! } : { file: ref, suffix: '' };
+};
+
+/** Words in plain text that might be files: trimmed of the punctuation around them. */
+function textCandidates(root: HTMLElement): { node: Text; start: number; end: number; ref: string }[] {
+  const out: { node: Text; start: number; end: number; ref: string }[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement?.closest('a, code, pre, .pc-path, [data-href], .pc-btn') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const node = n as Text;
+    for (const m of node.data.matchAll(/\S+/g)) {
+      const word = m[0];
+      const lead = /^[([{"'<]*/.exec(word)![0].length;
+      const trail = /[)\]}"'>,;:!?]*\.?$/.exec(word.slice(lead))![0].length;
+      const ref = word.slice(lead, word.length - trail);
+      if (ref.length > 2 && isCandidate(ref)) out.push({ node, start: m.index! + lead, end: m.index! + lead + ref.length, ref });
+    }
+  }
+  return out;
+}
+
+/**
+ * Make the files a reply names clickable: the ones in `code` and the ones in plain text. The daemon says which exist
+ * (an absolute or ~ path as is, a relative one under each of `bases`: where the agent is, its repo and their parents);
+ * only those become links, so a click always opens something.
+ */
+async function linkPaths(root: HTMLElement, bases: string[]): Promise<void> {
+  const codes = [...root.querySelectorAll<HTMLElement>('code.pc-cand:not([data-done])')];
+  const texts = textCandidates(root).slice(0, 80);
+  const key = (file: string) => `${bases.join('|')}\n${file}`;
+  const files = [...new Set([...codes.map((c) => c.dataset.cand!), ...texts.map((t) => t.ref)].map((r) => split(r).file))].slice(0, 120);
+  const unknown = files.filter((f) => !refCache.has(key(f)));
+  if (unknown.length) {
+    try {
+      const r = await rpc<{ paths: (string | null)[] }>('files.resolve', { refs: unknown, bases });
+      unknown.forEach((f, i) => { if (r.paths[i]) refCache.set(key(f), r.paths[i]!); });
+    } catch { /* offline: nothing links */ }
+  }
+  if (!root.isConnected) return;
+  const abs = (ref: string) => {
+    const { file, suffix } = split(ref);
+    const hit = refCache.get(key(file));
+    return hit ? hit + suffix : null;
+  };
+  for (const c of codes) {
+    c.dataset.done = '1';
+    const a = abs(c.dataset.cand!);
+    if (a) { c.classList.add('pc-path'); c.dataset.path = a; c.title = `Open ${a.replace(/^\/Users\/[^/]+/, '~')}`; }
+  }
+  // Last match first, so splitting a text node does not shift the offsets of the ones before it.
+  for (const t of texts.reverse()) {
+    const a = abs(t.ref);
+    if (!a || !t.node.parentNode) continue;
+    const mid = t.node.splitText(t.start);
+    mid.splitText(t.end - t.start);
+    const span = document.createElement('span');
+    span.className = 'pc-path pc-plain';
+    span.dataset.path = a;
+    span.title = `Open ${a.replace(/^\/Users\/[^/]+/, '~')}`;
+    span.textContent = mid.data;
+    mid.replaceWith(span);
+  }
+}
+
 export function renderProse(src: string): string {
   return md.render(src);
 }
@@ -115,7 +187,7 @@ export function renderProse(src: string): string {
  * After the HTML is in the page: highlight code blocks, right-align numeric table columns, and mark callouts
  * with their title. Safe to call again; finished nodes are skipped.
  */
-export async function enhanceProse(root: HTMLElement): Promise<void> {
+export async function enhanceProse(root: HTMLElement, bases: string[] = []): Promise<void> {
   for (const bq of root.querySelectorAll<HTMLElement>('blockquote.pc-callout:not([data-done])')) {
     bq.dataset.done = '1';
     const title = document.createElement('div');
@@ -142,4 +214,5 @@ export async function enhanceProse(root: HTMLElement): Promise<void> {
       pre.querySelector('code')!.innerHTML = await highlightBlock(pre.textContent ?? '', lang);
     } catch { /* unknown language: stays plain */ }
   }
+  await linkPaths(root, bases);
 }

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { RichContext, RichConversation, RichEnvelope, RichEvent, RichInfo, RichMcpServer, RichQuestion, SessionInfo } from '@jarvis/protocol';
 import { ago, isLocalUrl, openInViewer, openPreview, rpc, sessionRoot, setState, useStore } from './store';
-import { Prose } from './ProseView';
+import { Prose, ProseBases } from './ProseView';
 import { ContextPanel } from './ContextPanel';
 import { setDensity } from './actions';
 import { foldThinking } from './thinkingFold';
@@ -992,6 +992,17 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   };
 
   /** Clicks inside replies: copy and expand code blocks, open file paths and links. */
+  // Where a relative file path in a reply is looked for: where Claude is now, where the session started, its repo and
+  // worktree, and each of their parents (Claude says "apps/web/.env" from wherever it stands).
+  const proseBases = useMemo(() => {
+    const out: string[] = [];
+    const add = (d: string | null | undefined) => {
+      for (let p = d; p && p !== '/' && !out.includes(p); p = p.slice(0, p.lastIndexOf('/')) || '/') out.push(p);
+    };
+    for (const d of [status?.cwd, session.cwd, session.worktree, session.repoRoot]) add(d);
+    return out.slice(0, 40);
+  }, [status?.cwd, session.cwd, session.worktree, session.repoRoot]);
+
   const onProseClick = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
     const act = t.closest<HTMLElement>('[data-act]');
@@ -1021,9 +1032,14 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
       else window.jarvis.openExternal(href);
       return;
     }
-    // A link to a file in the repo (docs, plans): open it in the viewer.
+    // A link to a file (docs, plans): open it in the viewer, found wherever the agent means (its folder, the repo, a parent).
     const local = resolveLocalHref(href, session.cwd, window.jarvis.homeDir);
-    if (local) openInViewer({ path: local.path, root: sessionRoot(session), mode: 'file', line: local.line });
+    if (!local) return;
+    const raw = (() => { try { return decodeURI(href.replace(/^file:\/\//, '').replace(/#.*$/, '').replace(/:\d+(?::\d+)?$/, '')); } catch { return ''; } })();
+    const open = (path: string) => openInViewer({ path, root: sessionRoot(session), mode: 'file', line: local.line });
+    if (!raw || raw.startsWith('/') || raw.startsWith('~')) return open(local.path);
+    void rpc<{ paths: (string | null)[] }>('files.resolve', { refs: [raw], bases: proseBases })
+      .then((r) => open(r.paths[0] ?? local.path)).catch(() => open(local.path));
   };
 
   const showContext = async () => {
@@ -1199,6 +1215,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, density, ends, resolved, answersById, thinking, structure, agentCtx, taskStates, shellRuns, shellTick, status, connected, session.cwd, session.id, queuedText]);
   return (
+    <ProseBases.Provider value={proseBases}>
     <div className="rich-wrap" data-accent={accent || undefined}
       style={{ display: visible ? 'flex' : 'none', ...(accent && ACCENTS[accent] ? { ['--rv-accent' as string]: ACCENTS[accent] } : {}) }} onMouseDown={() => picker && setPicker(null)}
       onKeyDown={(e) => {
@@ -1316,6 +1333,7 @@ export function RichView({ session, visible }: { session: SessionInfo; visible: 
         </div>
       </div>
     </div>
+    </ProseBases.Provider>
   );
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FileContent } from '@jarvis/protocol';
+import type { FileContent, FileWriteResult } from '@jarvis/protocol';
 import { highlightLines, langFor } from './highlight';
 import { WebPreview } from './WebPreview';
 import { highlightCodeBlocks, renderMarkdown } from './markdown';
@@ -79,12 +79,54 @@ export function Viewer() {
   );
 }
 
+/** Unsaved edits by file, so switching tabs does not lose them. */
+const editDrafts = new Map<string, string>();
+
 function ViewerBody({ tab }: { tab: ViewerTab }) {
   const [file, setFile] = useState<FileContent | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const [rendered, setRendered] = useState(true);
   const [range, setRange] = useState<[number, number] | null>(tab.line ? [tab.line, tab.line] : null);
   const isMd = /\.(md|mdx|markdown)$/i.test(tab.path);
+  const [editing, setEditing] = useState(editDrafts.has(tab.path));
+  const [draft, setDraft] = useState(editDrafts.get(tab.path) ?? '');
+  const [saveState, setSaveState] = useState<{ kind: 'conflict' | 'error'; message: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const startEdit = () => {
+    setDraft(editDrafts.get(tab.path) ?? file?.text ?? '');
+    setSaveState(null);
+    setEditing(true);
+  };
+  const stopEdit = () => {
+    editDrafts.delete(tab.path);
+    setEditing(false);
+    setSaveState(null);
+  };
+  const save = async (overwrite = false) => {
+    if (saving || !file) return;
+    setSaving(true);
+    try {
+      const r = await rpc<FileWriteResult>('files.write', {
+        path: tab.path, text: draft, expectedMtime: overwrite || file.kind === 'missing' ? null : file.mtime, create: file.kind === 'missing',
+      });
+      if (!r.ok) {
+        setSaveState({ kind: r.reason, message: r.message });
+        return;
+      }
+      editDrafts.delete(tab.path);
+      setEditing(false);
+      setSaveState(null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+      await load();
+    } catch (e) {
+      setSaveState({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const load = async () => {
     if (tab.mode === 'diff' && tab.root) {
@@ -114,8 +156,18 @@ function ViewerBody({ tab }: { tab: ViewerTab }) {
       <div className="viewer-bar">
         <span className="vb-path" title={tab.path}>{rel(tab.path, tab.root)}</span>
         {file && file.kind === 'text' && <span className="vb-meta">{file.text!.split('\n').length} lines</span>}
+        {saved && <span className="vb-meta vb-saved">Saved</span>}
         <span className="vb-spacer" />
-        {isMd && tab.mode === 'file' && (
+        {tab.mode === 'file' && editing && (
+          <>
+            <button className="chip-btn primary" disabled={saving} title="Save (⌘S)" onClick={() => void save()}>{saving ? 'Saving…' : 'Save'} <kbd>⌘S</kbd></button>
+            <button className="chip-btn" disabled={saving} onClick={stopEdit}>Cancel</button>
+          </>
+        )}
+        {tab.mode === 'file' && !editing && file && (file.kind === 'text' || file.kind === 'missing') && (
+          <button className="chip-btn" title={file.kind === 'missing' ? 'Create this file' : 'Edit this file here'} onClick={startEdit}>{file.kind === 'missing' ? 'Create' : 'Edit'}</button>
+        )}
+        {isMd && tab.mode === 'file' && !editing && (
           <button className="chip-btn" onClick={() => setRendered((r) => !r)}>{rendered ? 'Source' : 'Rendered'}</button>
         )}
         {tab.root && (
@@ -134,8 +186,39 @@ function ViewerBody({ tab }: { tab: ViewerTab }) {
           diff === null ? <div className="viewer-empty">Loading…</div> : <DiffView diff={diff} />
         ) : !file ? (
           <div className="viewer-empty">Loading…</div>
+        ) : editing ? (
+          <div className="viewer-editwrap">
+            {saveState && (
+              <div className={`viewer-banner ${saveState.kind}`}>
+                <span>{saveState.kind === 'conflict' ? 'This file changed on disk since you opened it.' : saveState.message}</span>
+                {saveState.kind === 'conflict' && (
+                  <>
+                    <button className="chip-btn" onClick={() => void save(true)}>Overwrite</button>
+                    <button className="chip-btn" onClick={() => { stopEdit(); void load(); }}>Discard mine, reload</button>
+                  </>
+                )}
+              </div>
+            )}
+            <textarea className="viewer-edit" autoFocus spellCheck={false} value={draft} placeholder={file.kind === 'missing' ? 'New file' : ''}
+              onChange={(e) => { setDraft(e.target.value); editDrafts.set(tab.path, e.target.value); }}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void save(); }
+                else if (e.key === 'Tab' && !e.shiftKey) {
+                  e.preventDefault();
+                  const t = e.currentTarget;
+                  const next = `${t.value.slice(0, t.selectionStart)}  ${t.value.slice(t.selectionEnd)}`;
+                  const at = t.selectionStart + 2;
+                  setDraft(next);
+                  editDrafts.set(tab.path, next);
+                  requestAnimationFrame(() => t.setSelectionRange(at, at));
+                }
+              }} />
+          </div>
         ) : file.kind === 'missing' ? (
-          <div className="viewer-empty">File no longer exists.</div>
+          <div className="viewer-empty">
+            <div>No file at <code>{tildify(tab.path)}</code>.</div>
+            <button className="chip-btn" style={{ marginTop: 8 }} onClick={startEdit}>Create it</button>
+          </div>
         ) : file.kind === 'image' ? (
           <div className="viewer-image"><img src={file.dataUrl} alt={tab.path} /></div>
         ) : file.kind !== 'text' ? (

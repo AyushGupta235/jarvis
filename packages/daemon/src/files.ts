@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, readdirSync, readFileSync, statSync, watch, type FSWatcher } from 'node:fs';
-import { extname, join, relative } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { ChangedFile, FileContent, FileEntry } from '@jarvis/protocol';
 
 const MAX_FILES = 50_000;
@@ -101,6 +101,65 @@ export async function diff(root: string, path: string): Promise<string> {
     return (await git(root, ['diff', '--no-color', '--no-index', '--', '/dev/null', path], [0, 1])) ?? '';
   }
   return (await git(root, ['diff', '--no-color', 'HEAD', '--', path])) ?? '';
+}
+
+/**
+ * Where a file the agent named actually is. An absolute or ~ path is itself; a relative one is looked for under each
+ * base in turn (the agent's folder, its repo, their parents), because the agent says "apps/web/.env" from wherever it
+ * stands, not from where the session started. Only files count (a folder cannot be opened in the viewer).
+ */
+export function resolveRefs(refs: string[], bases: string[], home: string): (string | null)[] {
+  const isFile = (p: string) => {
+    try {
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
+  return refs.map((raw) => {
+    const ref = raw.replace(/^~(?=$|\/)/, home);
+    if (isAbsolute(ref)) return isFile(ref) ? resolve(ref) : null;
+    for (const b of bases) {
+      const p = resolve(b, ref);
+      if (isFile(p)) return p;
+    }
+    return null;
+  });
+}
+
+export type WriteResult = { ok: true; mtime: number; size: number } | { ok: false; reason: 'conflict' | 'error'; message: string };
+
+/**
+ * Save an edit. `expectedMtime` is the modification time the editor loaded: if the file has changed since, nothing is
+ * written (`conflict`) so an edit made elsewhere is not lost; null skips the check (Overwrite) or, with `create`,
+ * makes a new file. Writes in place, so permissions (a 0600 .env) are kept.
+ */
+export function writeText(path: string, text: string, expectedMtime: number | null, create = false): WriteResult {
+  if (!isAbsolute(path)) return { ok: false, reason: 'error', message: 'Not an absolute path.' };
+  if (Buffer.byteLength(text) > MAX_TEXT) return { ok: false, reason: 'error', message: 'Too large to save from here.' };
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    st = null;
+  }
+  try {
+    if (st) {
+      if (!st.isFile()) return { ok: false, reason: 'error', message: 'Not a file.' };
+      if (expectedMtime != null && Math.abs(st.mtimeMs - expectedMtime) > 1) {
+        return { ok: false, reason: 'conflict', message: 'This file changed on disk since you opened it.' };
+      }
+    } else if (!create) {
+      return { ok: false, reason: 'error', message: 'The file no longer exists.' };
+    } else {
+      mkdirSync(dirname(path), { recursive: true });
+    }
+    writeFileSync(path, text);
+    const now = statSync(path);
+    return { ok: true, mtime: now.mtimeMs, size: now.size };
+  } catch (e) {
+    return { ok: false, reason: 'error', message: (e as NodeJS.ErrnoException).code === 'EACCES' ? 'No permission to write this file.' : String((e as Error).message) };
+  }
 }
 
 export function readFile(path: string): FileContent {

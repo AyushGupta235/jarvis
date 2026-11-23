@@ -1,5 +1,8 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { enhanceProse, renderProse } from './prose';
+
+/** Folders a relative file path in a reply is looked for in (where the agent is, its repo, their parents). */
+export const ProseBases = createContext<string[]>([]);
 
 /**
  * A reply rendered as readable markdown (prose.ts), with a hover toolbar to copy its markdown source or
@@ -9,10 +12,13 @@ export const Prose = memo(function Prose({ text, className }: { text: string; cl
   const ref = useRef<HTMLDivElement>(null);
   const [raw, setRaw] = useState(false);
   const [copied, setCopied] = useState(false);
+  const bases = useContext(ProseBases);
+  const baseKey = bases.join('|');
   const html = useMemo(() => renderProse(text), [text]);
   useEffect(() => {
-    if (ref.current && !raw) void enhanceProse(ref.current);
-  }, [html, raw]);
+    if (ref.current && !raw) void enhanceProse(ref.current, bases);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [html, raw, baseKey]);
   return (
     <div className={`${className} rv-reply`}>
       <div className="rv-reply-tools">

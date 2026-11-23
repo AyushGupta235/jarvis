@@ -143,6 +143,8 @@ export interface ActivityEntry {
   output: string | null;
 }
 
+export type FileWriteResult = { ok: true; mtime: number; size: number } | { ok: false; reason: 'conflict' | 'error'; message: string };
+
 export interface FileEntry {
   path: string; // relative to root
   status: string | null; // git porcelain XY, e.g. ' M', '??', 'A '
@@ -582,6 +584,10 @@ export interface RpcMethods {
   'activity.list': [{ id: string; limit?: number }, ActivityEntry[]];
   'files.list': [{ root: string }, { root: string; files: FileEntry[]; truncated: boolean }];
   'files.read': [{ path: string }, FileContent];
+  /** Where the files the agent named are: absolute, or found under the first base that has them (null if none does). */
+  'files.resolve': [{ refs: string[]; bases: string[] }, { paths: (string | null)[] }];
+  /** Save an edit from the viewer. `expectedMtime` guards against overwriting a change made elsewhere. */
+  'files.write': [{ path: string; text: string; expectedMtime: number | null; create?: boolean }, FileWriteResult];
   'files.changes': [{ root: string }, ChangedFile[]];
   'files.diff': [{ root: string; path: string }, { diff: string }];
   'files.watch': [{ root: string }, { ok: true }];

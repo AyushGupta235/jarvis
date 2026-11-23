@@ -4,7 +4,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, r
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import type {
-  ActivityEntry, AgentDef, AgentLiveState, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent,
+  ActivityEntry, AgentDef, AgentLiveState, AttachSpec, ChangedFile, Connector, CreateSessionParams, DaemonInfo, DocEntry, FileContent, FileWriteResult,
   FileEntry, RepoCandidate, RichConversation, RichEnvelope, RichInfo, RichPermissionMode, SessionInfo, SessionMode, Snapshot,
   UsageSummary, WorkspaceInfo,
 } from '@jarvis/protocol';
@@ -17,7 +17,7 @@ import type { PrTracker, RemoteCache } from './prs';
 import { RICH_HOST_PROTOCOL } from '@jarvis/protocol';
 import type { RichSessions } from './rich';
 import { findTranscript, readThinking } from './thinking';
-import { FileWatcher, changes as fileChanges, diff as fileDiff, listFiles, readFile } from './files';
+import { FileWatcher, changes as fileChanges, diff as fileDiff, listFiles, readFile, resolveRefs, writeText } from './files';
 import { listDocs } from './docs';
 import { checkConnectors, listConnectors } from './connectors';
 import { findBinary } from './env';
@@ -868,6 +868,14 @@ export class JarvisService extends EventEmitter {
 
   filesRead(path: string): FileContent {
     return readFile(path.replace(/^~(?=$|\/)/, homedir()));
+  }
+
+  filesResolve(refs: string[], bases: string[]): { paths: (string | null)[] } {
+    return { paths: resolveRefs(refs.slice(0, 200), bases.slice(0, 40), homedir()) };
+  }
+
+  filesWrite(path: string, text: string, expectedMtime: number | null, create?: boolean): FileWriteResult {
+    return writeText(path.replace(/^~(?=$|\/)/, homedir()), text, expectedMtime, !!create);
   }
 
   filesChanges(root: string): Promise<ChangedFile[]> {

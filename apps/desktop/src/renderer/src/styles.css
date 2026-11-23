@@ -536,6 +536,14 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .vb-meta { font-size: 10.5px; color: var(--muted); flex: none; }
 .vb-spacer { flex: 1; }
 .viewer-scroll { flex: 1; min-height: 0; overflow: auto; }
+.viewer-editwrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.viewer-edit { flex: 1; min-height: 0; width: 100%; resize: none; border: none; outline: none; padding: 10px 14px; background: transparent; color: var(--text); font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: 12.5px; line-height: 1.55; tab-size: 2; white-space: pre; overflow: auto; }
+.viewer-banner { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 12px; background: rgb(var(--gold-rgb) / 0.12); border-bottom: 1px solid rgb(var(--gold-rgb) / 0.35); color: var(--text); }
+.viewer-banner.error { background: rgb(var(--love-rgb, var(--text-rgb)) / 0.12); border-color: rgb(var(--love-rgb, var(--text-rgb)) / 0.4); }
+.vb-saved { color: var(--pine); }
+.chip-btn.primary { color: var(--text); background: rgb(var(--iris-rgb) / 0.22); border-color: rgb(var(--iris-rgb) / 0.5); }
+.prose .pc-plain { color: var(--foam); cursor: pointer; border-bottom: 1px dotted rgb(var(--foam-rgb) / 0.5); }
+.prose .pc-plain:hover { background: rgb(var(--foam-rgb) / 0.14); }
 .viewer-empty { color: var(--muted); padding: 24px; font-size: 12.5px; }
 .viewer-image { padding: 16px; display: grid; place-items: center; }
 .viewer-image img { max-width: 100%; border-radius: 8px; background: repeating-conic-gradient(var(--surface) 0% 25%, var(--base) 0% 50%) 50% / 16px 16px; }
